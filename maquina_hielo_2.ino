@@ -5,7 +5,7 @@ constexpr int PIN_CONTROL_DE_FRIO = 32;
 constexpr int PIN_DEFROST = 35;
 constexpr int PIN_LLENADO = 37;
 constexpr int PIN_FAN = 39;
-constexpr int PIN_BOMBA = 41;
+constexpr int PIN_BOMBA = 33;
 
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 10000ul;
