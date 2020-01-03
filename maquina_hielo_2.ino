@@ -23,10 +23,10 @@ void setup() {
   
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_CONTROL_DE_FRIO, INPUT_PULLUP);
-  pinMode(PIN_DEFROST, OUTPUT); digitalWrite(PIN_DEFROST, LOW);
-  pinMode(PIN_LLENADO, OUTPUT); digitalWrite(PIN_LLENADO, LOW);
-  pinMode(PIN_FAN, OUTPUT);     digitalWrite(PIN_FAN, LOW);
-  pinMode(PIN_BOMBA, OUTPUT);   digitalWrite(PIN_BOMBA, LOW);
+  pinMode(PIN_DEFROST, OUTPUT); digitalWrite(PIN_DEFROST, HIGH);
+  pinMode(PIN_LLENADO, OUTPUT); digitalWrite(PIN_LLENADO, HIGH);
+  pinMode(PIN_FAN, OUTPUT);     digitalWrite(PIN_FAN, HIGH);
+  pinMode(PIN_BOMBA, OUTPUT);   digitalWrite(PIN_BOMBA, HIGH);
 }
 
 enum class Modo {
@@ -86,19 +86,19 @@ void loop() {
   }
 
   if (g_modo == Modo::INICIO_CICLO) {
-    digitalWrite(PIN_FAN, HIGH);
-    digitalWrite(PIN_DEFROST, LOW);
+    digitalWrite(PIN_FAN, LOW);
+    digitalWrite(PIN_DEFROST, HIGH);
     if (g_temp_debounce_inicio <= ahora) {
       g_temp_debounce_inicio = ahora + 1000; // programar siguiente actualizacion para dentro de 1 segundo
       if (flotador == HIGH) { // menos de lleno
-        digitalWrite(PIN_LLENADO, HIGH);
-      } else { // lleno
         digitalWrite(PIN_LLENADO, LOW);
+      } else { // lleno
+        digitalWrite(PIN_LLENADO, HIGH);
       }
     }
 
     if (flotador == LOW) { // lleno
-      digitalWrite(PIN_BOMBA, HIGH); // prender la bomba
+      digitalWrite(PIN_BOMBA, LOW); // prender la bomba
       g_temp_bomba_inicio = ahora + TIEMPO_BOMBA_INICIO; // programar su apagado
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Programando apagado de la bomba para dentro de 5s");
@@ -106,7 +106,7 @@ void loop() {
     }
 
     if (g_temp_bomba_inicio <= ahora) {
-      digitalWrite(PIN_BOMBA, LOW);
+      digitalWrite(PIN_BOMBA, HIGH);
     }
 
     if (g_temp_inicio_ciclo <= ahora) {
@@ -115,9 +115,9 @@ void loop() {
   }
 
   if (g_modo == Modo::CRUSERO) {
-    digitalWrite(PIN_FAN, HIGH);
-    digitalWrite(PIN_DEFROST, LOW);
-    digitalWrite(PIN_BOMBA, HIGH);
+    digitalWrite(PIN_FAN, LOW);
+    digitalWrite(PIN_DEFROST, HIGH);
+    digitalWrite(PIN_BOMBA, LOW);
 
     if (flotador == HIGH && flotador_antes == LOW) { // menos de lleno y justo cambio
       g_temp_crusero = ahora + TIEMPO_PREVIO_LLENADO_CRUSERO; // poner a correr tiempo
@@ -127,14 +127,14 @@ void loop() {
     }
     
     if (g_temp_crusero <= ahora) {
-      digitalWrite(PIN_LLENADO, HIGH);
+      digitalWrite(PIN_LLENADO, LOW);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
       }
     }
 
     if (flotador == LOW) { // lleno
-      digitalWrite(PIN_LLENADO, LOW);
+      digitalWrite(PIN_LLENADO, HIGH);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Lleno, apagando llenado");
       }
@@ -147,10 +147,10 @@ void loop() {
   }
 
   if (g_modo == Modo::FINAL_CICLO) {
-    digitalWrite(PIN_BOMBA, HIGH);
-    digitalWrite(PIN_LLENADO, LOW);
-    digitalWrite(PIN_FAN, HIGH);
-    digitalWrite(PIN_DEFROST, LOW);
+    digitalWrite(PIN_BOMBA, LOW);
+    digitalWrite(PIN_LLENADO, HIGH);
+    digitalWrite(PIN_FAN, LOW);
+    digitalWrite(PIN_DEFROST, HIGH);
     
     if (g_temp_final_ciclo <= ahora) {
       g_modo = Modo::DEFROST;
@@ -159,10 +159,10 @@ void loop() {
   }
 
   if (g_modo == Modo::DEFROST) {
-    digitalWrite(PIN_FAN, LOW);
-    digitalWrite(PIN_DEFROST, HIGH);
-    digitalWrite(PIN_BOMBA, LOW);
-    digitalWrite(PIN_LLENADO, LOW);
+    digitalWrite(PIN_FAN, HIGH);
+    digitalWrite(PIN_DEFROST, LOW);
+    digitalWrite(PIN_BOMBA, HIGH);
+    digitalWrite(PIN_LLENADO, HIGH);
     
     if (g_temp_defrost <= ahora) {
       g_modo = Modo::IR_INICIO_CICLO;
@@ -187,22 +187,22 @@ void loop() {
     }
 
     Serial.print(" - Salidas: ");
-    if (digitalRead(PIN_DEFROST) == HIGH) {
+    if (digitalRead(PIN_DEFROST) == LOW) {
       Serial.print("DEF ");
     } else {
       Serial.print("    ");
     }
-    if (digitalRead(PIN_LLENADO) == HIGH) {
+    if (digitalRead(PIN_LLENADO) == LOW) {
       Serial.print("LLE ");
     } else {
       Serial.print("    ");
     }
-    if (digitalRead(PIN_FAN) == HIGH) {
+    if (digitalRead(PIN_FAN) == LOW) {
       Serial.print("FAN ");
     } else {
       Serial.print("    ");
     }
-    if (digitalRead(PIN_BOMBA) == HIGH) {
+    if (digitalRead(PIN_BOMBA) == LOW) {
       Serial.print("BMB ");
     } else {
       Serial.print("    ");
