@@ -27,6 +27,7 @@ void setup() {
   pinMode(PIN_LLENADO, OUTPUT); digitalWrite(PIN_LLENADO, HIGH);
   pinMode(PIN_FAN, OUTPUT);     digitalWrite(PIN_FAN, HIGH);
   pinMode(PIN_BOMBA, OUTPUT);   digitalWrite(PIN_BOMBA, HIGH);
+  pinMode(LED_BUILTIN, OUTPUT); digitalWrite(LED_BUILTIN, LOW);
 }
 
 enum class Modo {
@@ -64,6 +65,29 @@ void loop() {
   const auto flotador = digitalRead(PIN_FLOTADOR) == HIGH ? LOW : HIGH;
   const auto control_frio = digitalRead(PIN_CONTROL_DE_FRIO) == HIGH ? LOW : HIGH;
   const auto ahora = millis();
+
+  // Led builtin
+  if (g_modo == Modo::INICIO_CICLO) {
+    if ((ahora % 1000) < 500) {
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
+  } else if (g_modo == Modo::CRUSERO) {
+    if ((ahora % 2000) < 1000) {
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
+  } else if (g_modo == Modo::FINAL_CICLO) {
+    if ((ahora % 500) < 250) {
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
+  } else if (g_modo == Modo::DEFROST) {
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
 
   // Inicializar contadores
   if (g_temp_debounce_inicio == 0) {
