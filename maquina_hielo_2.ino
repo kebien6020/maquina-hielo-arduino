@@ -8,15 +8,45 @@ constexpr int PIN_FAN = 39;
 constexpr int PIN_BOMBA = 33;
 
 // Tiempos
-constexpr auto TIEMPO_MODO_INICIO_CICLO = 10000ul;
+constexpr auto TIEMPO_MODO_INICIO_CICLO = 20000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
 constexpr auto TIEMPO_PREVIO_LLENADO_CRUSERO = 2ul * 60ul * 1000ul + 30ul * 1000ul;
-constexpr auto TIEMPO_FINAL_DE_CICLO = 3ul * 60ul * 1000ul;
-constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul;
+constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
+constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
+constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
+
+// Otros
+constexpr auto MUESTRAS_CONTROL_FRIO = 100;
 
 // Configuraciones de serial
-constexpr auto MONITOR_SERIAL = false;
+constexpr auto MONITOR_SERIAL = true;
 constexpr auto MENSAJES_ADICIONALES = false;
+
+template<typename T, int SIZE, typename A>
+class Promedio {
+  T data[SIZE];
+  T* current;
+public:
+  Promedio() : current(data) {}
+  
+  void add_val(T val)
+  {
+    *current = val;
+    ++current;
+    if (current >= (data + SIZE)) current = data;
+  }
+
+  A get_val()
+  {
+    A sum = 0;
+    for (auto val : data) {
+      sum += val;
+    }
+    return sum / SIZE;
+  }
+};
+
+Promedio<bool, MUESTRAS_CONTROL_FRIO, double> control_frio_promedio;
 
 void setup() {
   Serial.begin(115200);
@@ -28,6 +58,10 @@ void setup() {
   pinMode(PIN_FAN, OUTPUT);     digitalWrite(PIN_FAN, HIGH);
   pinMode(PIN_BOMBA, OUTPUT);   digitalWrite(PIN_BOMBA, HIGH);
   pinMode(LED_BUILTIN, OUTPUT); digitalWrite(LED_BUILTIN, LOW);
+
+  for (auto i {0}; i < MUESTRAS_CONTROL_FRIO; ++i) {
+    control_frio_promedio.add_val(1);
+  }
 }
 
 enum class Modo {
@@ -58,6 +92,7 @@ auto g_temp_inicio_ciclo = 0ul;
 auto g_temp_crusero = 0ul;
 auto g_temp_final_ciclo = 0ul;
 auto g_temp_defrost = 0ul;
+auto g_temp_muestras_control_frio = 0ul;
 
 auto flotador_antes = HIGH;
 
@@ -109,6 +144,14 @@ void loop() {
     g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
   }
 
+  // Tomar muestra control de frio
+  if (g_temp_muestras_control_frio <= ahora) {
+    g_temp_muestras_control_frio = ahora + TIEMPO_MUESTRA_CONTROL_FRIO;
+    control_frio_promedio.add_val(control_frio ? 1 : 0);
+  }
+
+  const auto control_frio_actual = control_frio_promedio.get_val() > 0.5;
+
   if (g_modo == Modo::INICIO_CICLO) {
     digitalWrite(PIN_FAN, LOW);
     digitalWrite(PIN_DEFROST, HIGH);
@@ -146,11 +189,11 @@ void loop() {
     if (flotador == HIGH && flotador_antes == LOW) { // menos de lleno y justo cambio
       g_temp_crusero = ahora + TIEMPO_PREVIO_LLENADO_CRUSERO; // poner a correr tiempo
       if (MENSAJES_ADICIONALES) {
-        Serial.println("Programando el llenado para dentro de 2:30");
+        Serial.println("Programando el llenado");
       }
     }
     
-    if (g_temp_crusero <= ahora) {
+    if (g_temp_crusero <= ahora && flotador == HIGH) {
       digitalWrite(PIN_LLENADO, LOW);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
@@ -164,7 +207,7 @@ void loop() {
       }
     }
 
-    if (control_frio == LOW) {
+    if (!control_frio_actual) {
       g_modo = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
     }
@@ -204,7 +247,7 @@ void loop() {
     } else {
       Serial.print("    ");
     }
-    if (control_frio == HIGH) {
+    if (control_frio_actual) {
       Serial.print("CTL ");
     } else {
       Serial.print("    ");
