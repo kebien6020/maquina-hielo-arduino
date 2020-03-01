@@ -10,10 +10,17 @@ constexpr int PIN_BOMBA = 33;
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 20000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
-constexpr auto TIEMPO_PREVIO_LLENADO_CRUSERO = 2ul * 60ul * 1000ul + 30ul * 1000ul;
+constexpr auto TIEMPO_PREVIO_LLENADO_CRUSERO = 30ul * 1000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
 constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
+
+// Calculo de temperatura
+constexpr auto TEMPERATURA_LECTURA_1 = 10;
+constexpr auto TEMPERATURA_CELSIUS_1 = double{0.0};
+
+constexpr auto TEMPERATURA_LECTURA_2 = 100;
+constexpr auto TEMPERATURA_CELSIUS_2 = double{50.0};
 
 // Otros
 constexpr auto MUESTRAS_CONTROL_FRIO = 100;
@@ -46,13 +53,13 @@ public:
   }
 };
 
-Promedio<bool, MUESTRAS_CONTROL_FRIO, double> control_frio_promedio;
+Promedio<int, MUESTRAS_CONTROL_FRIO, long long> control_frio_promedio;
 
 void setup() {
   Serial.begin(115200);
   
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
-  pinMode(PIN_CONTROL_DE_FRIO, INPUT_PULLUP);
+  pinMode(PIN_CONTROL_DE_FRIO, INPUT);
   pinMode(PIN_DEFROST, OUTPUT); digitalWrite(PIN_DEFROST, HIGH);
   pinMode(PIN_LLENADO, OUTPUT); digitalWrite(PIN_LLENADO, HIGH);
   pinMode(PIN_FAN, OUTPUT);     digitalWrite(PIN_FAN, HIGH);
@@ -60,7 +67,7 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT); digitalWrite(LED_BUILTIN, LOW);
 
   for (auto i {0}; i < MUESTRAS_CONTROL_FRIO; ++i) {
-    control_frio_promedio.add_val(1);
+    control_frio_promedio.add_val(128);
   }
 }
 
@@ -94,63 +101,32 @@ auto g_temp_final_ciclo = 0ul;
 auto g_temp_defrost = 0ul;
 auto g_temp_muestras_control_frio = 0ul;
 
+auto ahora = 0ul;
+
 auto flotador_antes = HIGH;
+
+void patronParpadeoLed();
+void inicializarContadores();
+void muestraControlFrio();
+void informacionSerial();
 
 void loop() {
   const auto flotador = digitalRead(PIN_FLOTADOR) == HIGH ? LOW : HIGH;
-  const auto control_frio = digitalRead(PIN_CONTROL_DE_FRIO) == HIGH ? LOW : HIGH;
-  const auto ahora = millis();
+  
+  ahora = millis();
 
-  // Led builtin
-  if (g_modo == Modo::INICIO_CICLO) {
-    if ((ahora % 1000) < 500) {
-      digitalWrite(LED_BUILTIN, HIGH);
-    } else {
-      digitalWrite(LED_BUILTIN, LOW);
-    }
-  } else if (g_modo == Modo::CRUSERO) {
-    if ((ahora % 2000) < 1000) {
-      digitalWrite(LED_BUILTIN, HIGH);
-    } else {
-      digitalWrite(LED_BUILTIN, LOW);
-    }
-  } else if (g_modo == Modo::FINAL_CICLO) {
-    if ((ahora % 500) < 250) {
-      digitalWrite(LED_BUILTIN, HIGH);
-    } else {
-      digitalWrite(LED_BUILTIN, LOW);
-    }
-  } else if (g_modo == Modo::DEFROST) {
-    digitalWrite(LED_BUILTIN, HIGH);
-  }
-
-  // Inicializar contadores
-  if (g_temp_debounce_inicio == 0) {
-    g_temp_debounce_inicio = ahora;
-  }
-  if (g_temp_bomba_inicio == 0) {
-    g_temp_bomba_inicio = ahora;
-  }
-  if (g_temp_serial == 0) {
-    g_temp_serial = ahora;
-  }
-  if (g_temp_serial == 0) {
-    g_temp_serial = ahora;
-  }
+  patronParpadeoLed();
+  inicializarContadores();
+  muestraControlFrio();
+  
+  const auto control_frio_actual = static_cast<int>(control_frio_promedio.get_val());
+  const auto temperatura = calcularTemperatura(control_frio_actual);
 
   // Cambio de modo inicio ciclo
   if (g_modo == Modo::IR_INICIO_CICLO) {
     g_modo = Modo::INICIO_CICLO;
     g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
   }
-
-  // Tomar muestra control de frio
-  if (g_temp_muestras_control_frio <= ahora) {
-    g_temp_muestras_control_frio = ahora + TIEMPO_MUESTRA_CONTROL_FRIO;
-    control_frio_promedio.add_val(control_frio ? 1 : 0);
-  }
-
-  const auto control_frio_actual = control_frio_promedio.get_val() > 0.5;
 
   if (g_modo == Modo::INICIO_CICLO) {
     digitalWrite(PIN_FAN, LOW);
@@ -236,7 +212,73 @@ void loop() {
     }
   }
 
-  // Informacion por serial
+  informacionSerial(flotador, control_frio_actual);
+
+  flotador_antes = flotador;
+}
+
+void patronParpadeoLed() {
+  if (g_modo == Modo::INICIO_CICLO) {
+    if ((ahora % 1000) < 500) {
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
+  } else if (g_modo == Modo::CRUSERO) {
+    if ((ahora % 2000) < 1000) {
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
+  } else if (g_modo == Modo::FINAL_CICLO) {
+    if ((ahora % 500) < 250) {
+      digitalWrite(LED_BUILTIN, HIGH);
+    } else {
+      digitalWrite(LED_BUILTIN, LOW);
+    }
+  } else if (g_modo == Modo::DEFROST) {
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+}
+
+void inicializarContadores() {
+  if (g_temp_debounce_inicio == 0) {
+    g_temp_debounce_inicio = ahora;
+  }
+  if (g_temp_bomba_inicio == 0) {
+    g_temp_bomba_inicio = ahora;
+  }
+  if (g_temp_serial == 0) {
+    g_temp_serial = ahora;
+  }
+  if (g_temp_serial == 0) {
+    g_temp_serial = ahora;
+  }
+}
+
+void muestraControlFrio() {
+  if (g_temp_muestras_control_frio <= ahora) {
+    g_temp_muestras_control_frio = ahora + TIEMPO_MUESTRA_CONTROL_FRIO;
+
+    const auto control_frio = analogRead(PIN_CONTROL_DE_FRIO);
+    control_frio_promedio.add_val(control_frio);
+  }
+}
+
+double calcularTemperatura(int valorSensor) {
+  constexpr auto x1 = TEMPERATURA_LECTURA_1;
+  constexpr auto x2 = TEMPERATURA_LECTURA_2;
+  constexpr auto y1 = TEMPERATURA_CELSIUS_1;
+  constexpr auto y2 = TEMPERATURA_CELSIUS_2;
+  constexpr auto m = (y2 - y1) / (x2 - x1);
+  constexpr auto b = y1 - m * x1;
+
+  const auto x = valorSensor;
+
+  return m * x + b;
+}
+
+void informacionSerial(int flotador, int lectura_frio) {
   if (MONITOR_SERIAL && g_temp_serial <= ahora) {
     Serial.print("Modo: ");
     Serial.print(modoATexto(g_modo));
@@ -244,11 +286,6 @@ void loop() {
     Serial.print(" - Entradas: ");
     if (flotador == HIGH) {
       Serial.print("FLT ");
-    } else {
-      Serial.print("    ");
-    }
-    if (control_frio_actual) {
-      Serial.print("CTL ");
     } else {
       Serial.print("    ");
     }
@@ -274,6 +311,12 @@ void loop() {
     } else {
       Serial.print("    ");
     }
+
+    Serial.print(" - LEC_TEMP: ");
+    Serial.print(lectura_frio);
+
+    Serial.print(", - TEMP_CALC: ");
+    Serial.print(calcularTemperatura(lectura_frio));
 
     if (g_modo == Modo::INICIO_CICLO) {
       Serial.print(" - T_INICIO: ");
@@ -304,6 +347,4 @@ void loop() {
     Serial.println();
     g_temp_serial += 1000;
   }
-
-  flotador_antes = flotador;
 }
