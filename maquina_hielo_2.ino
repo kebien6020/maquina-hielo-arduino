@@ -13,6 +13,7 @@ constexpr int PIN_FAN = 9;
 constexpr int PIN_BOMBA = 8;
 // constexpr int PIN_LLENADO_TK_ALMACENAMIENTO = 7;
 constexpr int PIN_LLENADO = 6;
+constexpr int PIN_MOTOR = 11;
 
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
@@ -44,6 +45,34 @@ auto tTArranque = NexText(4, 3, "txtTArranque");
 auto tBombaArr = NexText(4, 8, "txtPump");
 auto tFanArr = NexText(4, 9, "txtFan");
 auto tLlenadoArr = NexText(4, 10, "txtFill");
+auto tFltArr = NexText(4, 12, "txtFlt");
+
+auto tTInicioCiclo = NexText(5, 3, "txtTInicio");
+auto tBombaInicio = NexText(5, 8, "txtPump");
+auto tFanInicio = NexText(5, 9, "txtFan");
+auto tLlenadoInicio = NexText(5, 10, "txtFill");
+auto tFltInicio = NexText(5, 12, "txtFlt");
+
+auto tBombaCrusero = NexText(3, 10, "txtPump");
+auto tFanCrusero = NexText(3, 11, "txtFan");
+auto tLlenadoCrusero = NexText(3, 12, "txtFill");
+auto tFltCrusero = NexText(3, 3, "txtFlt");
+auto tTemperaturaCrusero = NexText(3, 9, "txtTmp");
+auto tTLlenadoCrusero = NexText(3, 14, "txtTFill");
+
+auto tMotorPDefrost = NexText(6, 10, "txtMotor");
+auto tTemperaturaPDefrost = NexText(6, 9, "txtTmp");
+auto tDefrostPDefrost = NexText(6, 9, "txtDefrost");
+auto tFanPDefrost = NexText(6, 11, "txtFan");
+auto tLlenadoPDefrost = NexText(6, 12, "txtFill");
+auto tTPreDefrost = NexText(6, 14, "txtTPreDefrost");
+
+auto tMotorDefrost = NexText(7, 10, "txtMotor");
+auto tTemperaturaDefrost = NexText(7, 9, "txtTmp");
+auto tDefrostDefrost = NexText(7, 9, "txtDefrost");
+auto tFanDefrost = NexText(7, 11, "txtFan");
+auto tLlenadoDefrost = NexText(7, 12, "txtFill");
+auto tTDefrost = NexText(7, 14, "txtTDefrost");
 
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
@@ -78,6 +107,9 @@ bool llenado() { return digitalRead(PIN_LLENADO) == HIGH; }
 void defrost(bool state) { digitalWrite(PIN_DEFROST, state ? LOW : HIGH); }
 bool defrost() { return digitalRead(PIN_DEFROST) == LOW; }
 
+void motor(bool state) { digitalWrite(PIN_MOTOR, state ? LOW : HIGH); }
+bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
+
 void setup() {
   Serial.begin(115200);
   
@@ -99,8 +131,17 @@ void setup() {
   {
     auto success = nexInit();
     while(nexSerial.available()) { Serial.print((uint8_t)nexSerial.read()); }
+
     if (success)
       Serial.print("Nex succesfully initialized");
+
+    nexSerial.print("bauds=115200");
+    nexSerial.write(0xff);
+    nexSerial.write(0xff);
+    nexSerial.write(0xff);
+    nexSerial.end();
+    delay(1000);
+    nexSerial.begin(115200);
   }
 
   // Eventos
@@ -446,6 +487,62 @@ void actualizarPantalla(bool flotador) {
       tBombaArr.setText(bomba() ? "ON" : "OFF");
       tFanArr.setText(fan() ? "ON" : "OFF");
       tLlenadoArr.setText(llenado() ? "ON" : "OFF");
+      tFltArr.setText(flotador ? "ON" : "OFF");
+    }
+
+    if (g_modo == Modo::INICIO_CICLO) {
+      itoa((g_temp_inicio_ciclo - ahora) / 1000ul, buffer, 10);
+      tTInicioCiclo.setText(buffer);
+      tBombaInicio.setText(bomba() ? "ON" : "OFF");
+      tFanInicio.setText(fan() ? "ON" : "OFF");
+      tLlenadoInicio.setText(llenado() ? "ON" : "OFF");
+      tFltInicio.setText(flotador ? "ON" : "OFF");
+    }
+
+    if (g_modo == Modo::CRUSERO) {
+      tBombaCrusero.setText(bomba() ? "ON" : "OFF");
+      tFanCrusero.setText(fan() ? "ON" : "OFF");
+      tLlenadoCrusero.setText(llenado() ? "ON": "OFF");
+      tFltCrusero.setText(flotador ? "ON": "OFF");
+      dtostrf(g_temperatura, 6, 1, buffer);
+      tTemperaturaCrusero.setText(buffer);
+      
+      if (g_temp_crusero >= ahora) {
+        itoa((g_temp_crusero - ahora) / 1000ul, buffer, 10);
+        tTLlenadoCrusero.setText(buffer);
+      } else {
+        tTLlenadoCrusero.setText("N/A");
+      }
+    }
+
+    if (g_modo == Modo::FINAL_CICLO) {
+      tMotorPDefrost.setText(motor() ? "ON" : "OFF");
+      dtostrf(g_temperatura, 6, 1, buffer);
+      tTemperaturaPDefrost.setText(buffer);
+      tDefrostPDefrost.setText(defrost() ? "ON" : "OFF");
+      tFanPDefrost.setText(fan() ? "ON" : "OFF");
+      tLlenadoPDefrost.setText(llenado() ? "ON": "OFF");
+      if (g_temp_final_ciclo >= ahora) {
+        itoa((g_temp_final_ciclo - ahora) / 1000ul, buffer, 10);
+        tTPreDefrost.setText(buffer);
+      } else {
+        tTPreDefrost.setText("N/A");
+      }
+    }
+
+    if (g_modo == Modo::DEFROST) {
+      tMotorDefrost.setText(motor() ? "ON" : "OFF");
+      dtostrf(g_temperatura, 6, 1, buffer);
+      tTemperaturaDefrost.setText(buffer);
+      tDefrostDefrost.setText(defrost() ? "ON" : "OFF");
+      tFanDefrost.setText(fan() ? "ON" : "OFF");
+      tLlenadoDefrost.setText(llenado() ? "ON": "OFF");
+      if (g_temp_defrost >= ahora) {
+        itoa((g_temp_defrost - ahora) / 1000ul, buffer, 10);
+        tTDefrost.setText(buffer);
+      } else {
+        tTDefrost.setText("N/A");
+      }
     }
   }
 
@@ -455,5 +552,13 @@ void actualizarPantalla(bool flotador) {
 
   if (g_modo == Modo::CRUSERO && g_modo_antes != Modo::CRUSERO) {
     sendCommand("page 3");
+  }
+
+  if (g_modo == Modo::FINAL_CICLO && g_modo_antes != Modo::FINAL_CICLO) {
+    sendCommand("page 6");
+  }
+
+  if (g_modo == Modo::DEFROST && g_modo_antes != Modo::DEFROST) {
+    sendCommand("page 7");
   }
 }
