@@ -1,5 +1,6 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <Nextion.h>
 
 // Entradas
 constexpr int PIN_FLOTADOR = 4;
@@ -27,6 +28,26 @@ constexpr auto TEMPERATURA_FINAL_CICLO = 0.0f;
 constexpr auto MONITOR_SERIAL = true;
 constexpr auto MENSAJES_ADICIONALES = false;
 
+// Componentes de la interfaz
+auto bReset0 = NexButton(0, 4, "b2");
+auto bReset1 = NexButton(1, 4, "b2");
+auto bReset2 = NexButton(2, 2, "b2");
+NexButton* todosReset[] = {&bReset0, &bReset1, &bReset2};
+
+auto bInicio = NexButton(0, 2, "b0");
+
+// Componentes que generan eventos
+NexTouch* nex_listen_list[] = {
+  &bReset0,
+  &bReset1,
+  &bReset2,
+  &bInicio,
+  NULL
+};
+
+void resetCallback(void *);
+void inicioCallback(void *);
+
 OneWire wire{PIN_SENSOR_TEMPERATURA};
 DallasTemperature sensor{&wire};
 DeviceAddress deviceAddress;
@@ -42,13 +63,28 @@ void setup() {
   pinMode(PIN_BOMBA, OUTPUT);   digitalWrite(PIN_BOMBA, HIGH);
   pinMode(LED_BUILTIN, OUTPUT); digitalWrite(LED_BUILTIN, LOW);
 
+  // Sensor de temperatura
   sensor.begin();
   sensor.setWaitForConversion(false);
 	sensor.getAddress(deviceAddress, 0);
+
+  // Pantalla
+  {
+    auto success = nexInit();
+    while(nexSerial.available()) { Serial.print((uint8_t)nexSerial.read()); }
+    if (success)
+      Serial.print("Nex succesfully initialized");
+  }
+
+  // Eventos
+  for (NexButton* bReset : todosReset) {
+    bReset->attachPop(resetCallback);
+  }
+  bInicio.attachPop(inicioCallback);
 }
 
 enum class Modo {
-  IR_INICIO_CICLO,
+  DETENIDO,
   INICIO_CICLO,
   CRUSERO,
   FINAL_CICLO,
@@ -58,7 +94,7 @@ enum class Modo {
 using Modo = Modo; // Blame Arduino IDE, https://arduino.stackexchange.com/questions/28133/cant-use-enum-as-function-argument
 const char* modoATexto(Modo m) {
   switch (m) {
-    case Modo::IR_INICIO_CICLO: return "IR_INICIO_CICLO";
+    case Modo::DETENIDO:        return "DETENIDO";
     case Modo::INICIO_CICLO:    return "INICIO_CICLO";
     case Modo::CRUSERO:         return "CRUSERO     ";
     case Modo::FINAL_CICLO:     return "FINAL_CICLO ";
@@ -67,7 +103,7 @@ const char* modoATexto(Modo m) {
   return                               "DESCONOCIDO ";
 }
 
-auto g_modo = Modo::IR_INICIO_CICLO;
+auto g_modo = Modo::DETENIDO;
 auto g_temp_debounce_inicio = 0ul;
 auto g_temp_bomba_inicio = 0ul;
 auto g_temp_serial = 0ul;
@@ -83,6 +119,16 @@ auto ahora = 0ul;
 
 auto flotador_antes = HIGH;
 
+// Callbacks interfaz
+void resetCallback(void *) {
+  g_modo = Modo::DETENIDO;
+}
+
+void inicioCallback(void *) {
+  g_modo = Modo::INICIO_CICLO;
+  g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+}
+
 void patronParpadeoLed();
 void inicializarContadores();
 void muestraControlFrio();
@@ -97,12 +143,7 @@ void loop() {
   patronParpadeoLed();
   inicializarContadores();
   leerTemperatura();
-
-  // Cambio de modo inicio ciclo
-  if (g_modo == Modo::IR_INICIO_CICLO) {
-    g_modo = Modo::INICIO_CICLO;
-    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
-  }
+  nexLoop(nex_listen_list);
 
   if (g_modo == Modo::INICIO_CICLO) {
     digitalWrite(PIN_FAN, LOW);
@@ -184,7 +225,8 @@ void loop() {
     digitalWrite(PIN_LLENADO, LOW);
     
     if (g_temp_defrost <= ahora) {
-      g_modo = Modo::IR_INICIO_CICLO;
+      g_modo = Modo::INICIO_CICLO;
+      g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
     }
   }
 
