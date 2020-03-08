@@ -1,12 +1,13 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include <Nextion.h>
+#include <stdlib.h>
 
 // Entradas
 constexpr int PIN_FLOTADOR = 4;
 constexpr int PIN_SENSOR_TEMPERATURA = A0;
 // Salidas
-// constexpr int PIN_CONTACTOR_PRINCIPAL = 11;
+constexpr int PIN_CONTACTOR_PRINCIPAL = 11;
 constexpr int PIN_DEFROST = 10;
 constexpr int PIN_FAN = 9;
 constexpr int PIN_BOMBA = 8;
@@ -14,12 +15,13 @@ constexpr int PIN_BOMBA = 8;
 constexpr int PIN_LLENADO = 6;
 
 // Tiempos
-constexpr auto TIEMPO_MODO_INICIO_CICLO = 20000ul;
+constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
 constexpr auto TIEMPO_PREVIO_LLENADO_CRUSERO = 30ul * 1000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
 constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
+constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
 // Temperaturas
 constexpr auto TEMPERATURA_FINAL_CICLO = 0.0f;
@@ -32,15 +34,24 @@ constexpr auto MENSAJES_ADICIONALES = false;
 auto bReset0 = NexButton(0, 4, "b2");
 auto bReset1 = NexButton(1, 4, "b2");
 auto bReset2 = NexButton(2, 2, "b2");
-NexButton* todosReset[] = {&bReset0, &bReset1, &bReset2};
+auto bReset3 = NexButton(3, 2, "b2");
+auto bReset4 = NexButton(4, 2, "b2");
+NexButton* todosReset[] = {&bReset0, &bReset1, &bReset2, &bReset3, &bReset4};
 
 auto bInicio = NexButton(0, 2, "b0");
+
+auto tTArranque = NexText(4, 3, "txtTArranque");
+auto tBombaArr = NexText(4, 8, "txtPump");
+auto tFanArr = NexText(4, 9, "txtFan");
+auto tLlenadoArr = NexText(4, 10, "txtFill");
 
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
   &bReset0,
   &bReset1,
   &bReset2,
+  &bReset3,
+  &bReset4,
   &bInicio,
   NULL
 };
@@ -52,16 +63,32 @@ OneWire wire{PIN_SENSOR_TEMPERATURA};
 DallasTemperature sensor{&wire};
 DeviceAddress deviceAddress;
 
+void contactor(bool state) { digitalWrite(PIN_CONTACTOR_PRINCIPAL, state ? LOW : HIGH); }
+bool contactor() { return digitalRead(PIN_CONTACTOR_PRINCIPAL) == LOW; }
+
+void bomba(bool state) { digitalWrite(PIN_BOMBA, state ? LOW : HIGH); }
+bool bomba() { return digitalRead(PIN_BOMBA) == LOW; }
+
+void fan(bool state) { digitalWrite(PIN_FAN, state ? LOW : HIGH); }
+bool fan() { return digitalRead(PIN_FAN) == LOW; }
+
+void llenado(bool state) { digitalWrite(PIN_LLENADO, state ? HIGH : LOW); }
+bool llenado() { return digitalRead(PIN_LLENADO) == HIGH; }
+
+void defrost(bool state) { digitalWrite(PIN_DEFROST, state ? LOW : HIGH); }
+bool defrost() { return digitalRead(PIN_DEFROST) == LOW; }
+
 void setup() {
   Serial.begin(115200);
   
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_SENSOR_TEMPERATURA, INPUT);
-  pinMode(PIN_DEFROST, OUTPUT); digitalWrite(PIN_DEFROST, HIGH);
-  pinMode(PIN_LLENADO, OUTPUT); digitalWrite(PIN_LLENADO, LOW); // active high
-  pinMode(PIN_FAN, OUTPUT);     digitalWrite(PIN_FAN, HIGH);
-  pinMode(PIN_BOMBA, OUTPUT);   digitalWrite(PIN_BOMBA, HIGH);
-  pinMode(LED_BUILTIN, OUTPUT); digitalWrite(LED_BUILTIN, LOW);
+  pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT); contactor(false);
+  pinMode(PIN_LLENADO, OUTPUT);             llenado(false);
+  pinMode(PIN_FAN, OUTPUT);                 fan(false);
+  pinMode(PIN_BOMBA, OUTPUT);               bomba(false);
+  pinMode(PIN_DEFROST, OUTPUT);             defrost(false);
+  pinMode(LED_BUILTIN, OUTPUT);             digitalWrite(LED_BUILTIN, LOW);
 
   // Sensor de temperatura
   sensor.begin();
@@ -85,6 +112,7 @@ void setup() {
 
 enum class Modo {
   DETENIDO,
+  ARRANQUE,
   INICIO_CICLO,
   CRUSERO,
   FINAL_CICLO,
@@ -94,7 +122,8 @@ enum class Modo {
 using Modo = Modo; // Blame Arduino IDE, https://arduino.stackexchange.com/questions/28133/cant-use-enum-as-function-argument
 const char* modoATexto(Modo m) {
   switch (m) {
-    case Modo::DETENIDO:        return "DETENIDO";
+    case Modo::DETENIDO:        return "DETENIDO    ";
+    case Modo::ARRANQUE:        return "ARRANQUE    ";
     case Modo::INICIO_CICLO:    return "INICIO_CICLO";
     case Modo::CRUSERO:         return "CRUSERO     ";
     case Modo::FINAL_CICLO:     return "FINAL_CICLO ";
@@ -103,6 +132,7 @@ const char* modoATexto(Modo m) {
   return                               "DESCONOCIDO ";
 }
 
+auto g_modo_antes = Modo::DETENIDO;
 auto g_modo = Modo::DETENIDO;
 auto g_temp_debounce_inicio = 0ul;
 auto g_temp_bomba_inicio = 0ul;
@@ -112,6 +142,7 @@ auto g_temp_crusero = 0ul;
 auto g_temp_final_ciclo = 0ul;
 auto g_temp_defrost = 0ul;
 auto g_temp_muestras_control_frio = 0ul;
+auto g_temp_contactor = 0ul;
 
 auto g_temperatura = 25.0f;
 
@@ -125,8 +156,10 @@ void resetCallback(void *) {
 }
 
 void inicioCallback(void *) {
-  g_modo = Modo::INICIO_CICLO;
-  g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+  Serial.println("Boton inicio");
+  g_modo = Modo::ARRANQUE;
+  
+  sendCommand("page 4");
 }
 
 void patronParpadeoLed();
@@ -134,9 +167,15 @@ void inicializarContadores();
 void muestraControlFrio();
 void informacionSerial();
 void leerTemperatura();
+void actualizarPantalla(bool flotador);
+
+auto flotador = false; // true -> lleno
 
 void loop() {
-  const auto flotador = digitalRead(PIN_FLOTADOR) == HIGH ? LOW : HIGH;
+  g_modo_antes = g_modo;
+  flotador_antes = flotador;
+
+  flotador = digitalRead(PIN_FLOTADOR) == LOW;
   
   ahora = millis();
 
@@ -145,20 +184,47 @@ void loop() {
   leerTemperatura();
   nexLoop(nex_listen_list);
 
-  if (g_modo == Modo::INICIO_CICLO) {
-    digitalWrite(PIN_FAN, LOW);
-    digitalWrite(PIN_DEFROST, HIGH);
+  if (g_modo == Modo::ARRANQUE && g_modo_antes != Modo::ARRANQUE) {
+    Serial.println("Programando tiempo modo arranque");
+    g_temp_contactor = ahora + TIEMPO_ARRANQUE_CONTACTOR;
+    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+  }
+
+  if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
+    Serial.println("Programando tiempo modo inicio ciclo");
+    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+  }
+
+  if (g_modo == Modo::DETENIDO) {
+    contactor(false);
+    defrost(false);
+    bomba(false);
+    fan(false);
+    llenado(false);
+  }
+
+  if (g_modo == Modo::INICIO_CICLO || g_modo == Modo::ARRANQUE) {
+    if (g_modo == Modo::ARRANQUE) {
+      if (g_temp_contactor <= ahora) {
+        contactor(true);
+        g_modo = Modo::INICIO_CICLO;
+      }
+    } else {
+      contactor(true);
+    }
+    fan(true);
+    defrost(false);
     if (g_temp_debounce_inicio <= ahora) {
       g_temp_debounce_inicio = ahora + 1000; // programar siguiente actualizacion para dentro de 1 segundo
       if (flotador == HIGH) { // menos de lleno
-        digitalWrite(PIN_LLENADO, HIGH);
+        llenado(true);
       } else { // lleno
-        digitalWrite(PIN_LLENADO, LOW);
+        llenado(false);
       }
     }
 
     if (flotador == LOW) { // lleno
-      digitalWrite(PIN_BOMBA, LOW); // prender la bomba
+      bomba(true); // prender la bomba
       g_temp_bomba_inicio = ahora + TIEMPO_BOMBA_INICIO; // programar su apagado
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Programando apagado de la bomba para dentro de 5s");
@@ -166,18 +232,19 @@ void loop() {
     }
 
     if (g_temp_bomba_inicio <= ahora) {
-      digitalWrite(PIN_BOMBA, HIGH);
+      bomba(false);
     }
 
     if (g_temp_inicio_ciclo <= ahora) {
+      Serial.println("Pasando a modo crusero");
       g_modo = Modo::CRUSERO;
     }
   }
 
   if (g_modo == Modo::CRUSERO) {
-    digitalWrite(PIN_FAN, LOW);
-    digitalWrite(PIN_DEFROST, HIGH);
-    digitalWrite(PIN_BOMBA, LOW);
+    fan(true);
+    defrost(false);
+    bomba(true);
 
     if (flotador == HIGH && flotador_antes == LOW) { // menos de lleno y justo cambio
       g_temp_crusero = ahora + TIEMPO_PREVIO_LLENADO_CRUSERO; // poner a correr tiempo
@@ -187,14 +254,14 @@ void loop() {
     }
     
     if (g_temp_crusero <= ahora && flotador == HIGH) {
-      digitalWrite(PIN_LLENADO, HIGH);
+      llenado(true);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
       }
     }
 
     if (flotador == LOW) { // lleno
-      digitalWrite(PIN_LLENADO, LOW);
+      llenado(false);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Lleno, apagando llenado");
       }
@@ -207,10 +274,10 @@ void loop() {
   }
 
   if (g_modo == Modo::FINAL_CICLO) {
-    digitalWrite(PIN_BOMBA, LOW);
-    digitalWrite(PIN_LLENADO, LOW);
-    digitalWrite(PIN_FAN, LOW);
-    digitalWrite(PIN_DEFROST, HIGH);
+    bomba(true);
+    llenado(false);
+    fan(true);
+    defrost(false);
     
     if (g_temp_final_ciclo <= ahora) {
       g_modo = Modo::DEFROST;
@@ -219,20 +286,18 @@ void loop() {
   }
 
   if (g_modo == Modo::DEFROST) {
-    digitalWrite(PIN_FAN, HIGH);
-    digitalWrite(PIN_DEFROST, LOW);
-    digitalWrite(PIN_BOMBA, HIGH);
-    digitalWrite(PIN_LLENADO, LOW);
+    fan(false);
+    defrost(true);
+    bomba(false);
+    llenado(false);
     
     if (g_temp_defrost <= ahora) {
       g_modo = Modo::INICIO_CICLO;
-      g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
     }
   }
 
+  actualizarPantalla(flotador);
   informacionSerial(flotador);
-
-  flotador_antes = flotador;
 }
 
 void patronParpadeoLed() {
@@ -272,6 +337,12 @@ void inicializarContadores() {
   if (g_temp_serial == 0) {
     g_temp_serial = ahora;
   }
+  if (g_temp_inicio_ciclo == 0) {
+    g_temp_contactor = ahora + TIEMPO_MODO_INICIO_CICLO;
+  }
+  if (g_temp_contactor == 0) {
+    g_temp_contactor = ahora + TIEMPO_ARRANQUE_CONTACTOR;
+  }
 }
 
 void leerTemperatura() {
@@ -281,7 +352,15 @@ void leerTemperatura() {
 }
 
 void informacionSerial(int flotador) {
+  if (g_modo != g_modo_antes) {
+    Serial.print(modoATexto(g_modo_antes));
+    Serial.print(" -> ");
+    Serial.println(modoATexto(g_modo));
+  }
+
   if (MONITOR_SERIAL && g_temp_serial <= ahora) {
+    
+
     Serial.print("Modo: ");
     Serial.print(modoATexto(g_modo));
 
@@ -345,5 +424,36 @@ void informacionSerial(int flotador) {
 
     Serial.println();
     g_temp_serial += 1000;
+  }
+}
+
+void actualizarPantalla(bool flotador) {
+  if (g_temp_serial <= ahora) {
+    // tFlt.setText(flotador ? "Lleno" : "Vacio");
+    // char buffer_temperatura[32];
+    // dtostrf(g_temperatura, 6, 1, buffer_temperatura);
+    // tTmp.setText(buffer_temperatura);
+    // tContact.setText(contactor() ? "ON" : "OFF");
+    // tMode.setText(modoATexto(g_modo));
+    // tDefrost.setText(defrost() ? "ON" : "OFF");
+
+    
+    char buffer[32];
+
+    if (g_modo == Modo::ARRANQUE) {
+      itoa((g_temp_contactor - ahora) / 1000ul, buffer, 10);
+      tTArranque.setText(buffer);
+      tBombaArr.setText(bomba() ? "ON" : "OFF");
+      tFanArr.setText(fan() ? "ON" : "OFF");
+      tLlenadoArr.setText(llenado() ? "ON" : "OFF");
+    }
+  }
+
+  if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
+    sendCommand("page 5");
+  }
+
+  if (g_modo == Modo::CRUSERO && g_modo_antes != Modo::CRUSERO) {
+    sendCommand("page 3");
   }
 }
