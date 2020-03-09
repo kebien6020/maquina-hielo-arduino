@@ -3,6 +3,8 @@
 #include <Nextion.h>
 #include <stdlib.h>
 
+#include "src/NexDualButton.h"
+
 // Entradas
 constexpr int PIN_FLOTADOR = 4;
 constexpr int PIN_SENSOR_TEMPERATURA = A0;
@@ -33,13 +35,10 @@ constexpr auto MENSAJES_ADICIONALES = false;
 
 // Componentes de la interfaz
 auto bReset0 = NexButton(0, 4, "b2");
-auto bReset1 = NexButton(1, 4, "b2");
-auto bReset2 = NexButton(2, 2, "b2");
-auto bReset3 = NexButton(3, 2, "b2");
-auto bReset4 = NexButton(4, 2, "b2");
-NexButton* todosReset[] = {&bReset0, &bReset1, &bReset2, &bReset3, &bReset4};
+NexButton* todosReset[] = {&bReset0};
 
 auto bInicio = NexButton(0, 2, "b0");
+auto bProcesoActual = NexButton(0, 6, "b4");
 
 auto tTArranque = NexText(4, 3, "txtTArranque");
 auto tBombaArr = NexText(4, 8, "txtPump");
@@ -74,40 +73,60 @@ auto tFanDefrost = NexText(7, 11, "txtFan");
 auto tLlenadoDefrost = NexText(7, 12, "txtFill");
 auto tTDefrost = NexText(7, 14, "txtTDefrost");
 
+auto bAgua = NexDualButton(1, 3, "bAgua");
+auto bAguaC = NexDualButton(1, 5, "bAguaC");
+auto bLlenado = NexDualButton(1, 4, "bLlenado");
+auto bLlenadoC = NexDualButton(1, 6, "bLlenadoC");
+auto bDefrost = NexDualButton(1, 7, "bDefrost");
+
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
   &bReset0,
-  &bReset1,
-  &bReset2,
-  &bReset3,
-  &bReset4,
   &bInicio,
+  &bAgua,
+  &bAguaC,
+  &bLlenado,
+  &bLlenadoC,
+  &bProcesoActual,
+  &bDefrost,
   NULL
 };
 
 void resetCallback(void *);
 void inicioCallback(void *);
+void manualBombaCallback(void *);
+void irProcesoActualCallback(void *);
+void modoDefrostCallback(void *);
+void manualLlenadoCallback(void *);
+void manualBombaControlCallback(void *);
+void manualLlenadoControlCallback(void *);
 
 OneWire wire{PIN_SENSOR_TEMPERATURA};
 DallasTemperature sensor{&wire};
 DeviceAddress deviceAddress;
 
-void contactor(bool state) { digitalWrite(PIN_CONTACTOR_PRINCIPAL, state ? LOW : HIGH); }
+bool g_contactor = false;
+void contactor(bool state) { g_contactor = state; }
 bool contactor() { return digitalRead(PIN_CONTACTOR_PRINCIPAL) == LOW; }
 
-void bomba(bool state) { digitalWrite(PIN_BOMBA, state ? LOW : HIGH); }
+bool g_bomba = false;
+void bomba(bool state) { g_bomba = state; }
 bool bomba() { return digitalRead(PIN_BOMBA) == LOW; }
 
-void fan(bool state) { digitalWrite(PIN_FAN, state ? LOW : HIGH); }
+bool g_fan = false;
+void fan(bool state) { g_fan = state; }
 bool fan() { return digitalRead(PIN_FAN) == LOW; }
 
-void llenado(bool state) { digitalWrite(PIN_LLENADO, state ? HIGH : LOW); }
+bool g_llenado = false;
+void llenado(bool state) { g_llenado = state; }
 bool llenado() { return digitalRead(PIN_LLENADO) == HIGH; }
 
-void defrost(bool state) { digitalWrite(PIN_DEFROST, state ? LOW : HIGH); }
+bool g_defrost = false;
+void defrost(bool state) { g_defrost = state; }
 bool defrost() { return digitalRead(PIN_DEFROST) == LOW; }
 
-void motor(bool state) { digitalWrite(PIN_MOTOR, state ? LOW : HIGH); }
+bool g_motor = false;
+void motor(bool state) { g_motor = state; }
 bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
 
 void setup() {
@@ -129,19 +148,13 @@ void setup() {
 
   // Pantalla
   {
-    auto success = nexInit();
-    while(nexSerial.available()) { Serial.print((uint8_t)nexSerial.read()); }
-
-    if (success)
-      Serial.print("Nex succesfully initialized");
-
-    nexSerial.print("bauds=115200");
-    nexSerial.write(0xff);
-    nexSerial.write(0xff);
-    nexSerial.write(0xff);
-    nexSerial.end();
-    delay(1000);
+    
     nexSerial.begin(115200);
+    sendCommand("");
+    sendCommand("bkcmd=1");
+    recvRetCommandFinished();
+    sendCommand("page 0");
+    recvRetCommandFinished();
   }
 
   // Eventos
@@ -149,6 +162,12 @@ void setup() {
     bReset->attachPop(resetCallback);
   }
   bInicio.attachPop(inicioCallback);
+  bAgua.attachPop(manualBombaCallback);
+  bAguaC.attachPop(manualBombaControlCallback);
+  bLlenado.attachPop(manualLlenadoCallback);
+  bLlenadoC.attachPop(manualLlenadoControlCallback);
+  bProcesoActual.attachPop(irProcesoActualCallback);
+  bDefrost.attachPop(modoDefrostCallback);
 }
 
 enum class Modo {
@@ -175,6 +194,7 @@ const char* modoATexto(Modo m) {
 
 auto g_modo_antes = Modo::DETENIDO;
 auto g_modo = Modo::DETENIDO;
+auto g_modo_siguiente = Modo::DETENIDO;
 auto g_temp_debounce_inicio = 0ul;
 auto g_temp_bomba_inicio = 0ul;
 auto g_temp_serial = 0ul;
@@ -185,6 +205,11 @@ auto g_temp_defrost = 0ul;
 auto g_temp_muestras_control_frio = 0ul;
 auto g_temp_contactor = 0ul;
 
+auto g_bomba_control_manual = false;
+auto g_bomba_manual = false;
+auto g_llenado_control_manual = false;
+auto g_llenado_manual = false;
+
 auto g_temperatura = 25.0f;
 
 auto ahora = 0ul;
@@ -193,14 +218,91 @@ auto flotador_antes = HIGH;
 
 // Callbacks interfaz
 void resetCallback(void *) {
-  g_modo = Modo::DETENIDO;
+  g_modo_siguiente = Modo::DETENIDO;
 }
 
 void inicioCallback(void *) {
   Serial.println("Boton inicio");
-  g_modo = Modo::ARRANQUE;
+  g_modo_siguiente = Modo::ARRANQUE;
   
   sendCommand("page 4");
+  recvRetCommandFinished();
+}
+
+void manualBombaControlCallback(void *) {
+  Serial.println("Cambio de modo manual para bomba");
+  uint32_t aguaC = -1;
+
+  sendCommand("bkcmd=0");
+  recvRetCommandFinished();
+  sendCommand("get bAguaC.val");
+  recvRetNumber(&aguaC);
+  sendCommand("bkcmd=1");
+  recvRetCommandFinished();
+
+  g_bomba_control_manual = aguaC == 1;
+}
+
+void manualLlenadoControlCallback(void *) {
+  Serial.println("Cambio de modo manual para llenado");
+  uint32_t llenadoC = -1;
+  
+  sendCommand("bkcmd=0");
+  recvRetCommandFinished();
+  sendCommand("get bLlenadoC.val");
+  recvRetNumber(&llenadoC);
+  sendCommand("bkcmd=1");
+  recvRetCommandFinished();
+
+  g_llenado_control_manual = llenadoC == 1;
+}
+
+void manualBombaCallback(void *) {
+  uint32_t agua = -1;
+
+  sendCommand("bkcmd=0");
+  recvRetCommandFinished();
+  sendCommand("get bAgua.val");
+  recvRetNumber(&agua);
+  sendCommand("bkcmd=1");
+  recvRetCommandFinished();
+
+  g_bomba_manual = agua == 1;
+}
+
+void manualLlenadoCallback(void *) {
+  uint32_t llenado = -1;
+
+  sendCommand("bkcmd=0");
+  recvRetCommandFinished();
+  sendCommand("get bLlenado.val");
+  recvRetNumber(&llenado);
+  sendCommand("bkcmd=1");
+  recvRetCommandFinished();
+
+  g_llenado_manual = llenado == 1;
+}
+
+void modoDefrostCallback(void *) {
+  Serial.println("Boton manual defrost");
+
+  g_modo_siguiente = Modo::DEFROST;
+
+  sendCommand("page 7");
+  recvRetCommandFinished();
+}
+
+void irProcesoActualCallback(void *) {
+  switch (g_modo) {
+    case Modo::ARRANQUE: sendCommand("page 4"); break;
+    case Modo::INICIO_CICLO: sendCommand("page 5"); break;
+    case Modo::CRUSERO: sendCommand("page 3"); break;
+    case Modo::FINAL_CICLO: sendCommand("page 6"); break;
+    case Modo::DEFROST: sendCommand("page 7"); break;
+    default: sendCommand("page 0"); break;
+  }
+
+  recvRetCommandFinished();
 }
 
 void patronParpadeoLed();
@@ -209,13 +311,16 @@ void muestraControlFrio();
 void informacionSerial();
 void leerTemperatura();
 void actualizarPantalla(bool flotador);
+void actualizarSalidas();
+void cambiosDeModo();
 
 auto flotador = false; // true -> lleno
 
 void loop() {
   g_modo_antes = g_modo;
-  flotador_antes = flotador;
+  g_modo = g_modo_siguiente;
 
+  flotador_antes = flotador;
   flotador = digitalRead(PIN_FLOTADOR) == LOW;
   
   ahora = millis();
@@ -223,18 +328,7 @@ void loop() {
   patronParpadeoLed();
   inicializarContadores();
   leerTemperatura();
-  nexLoop(nex_listen_list);
-
-  if (g_modo == Modo::ARRANQUE && g_modo_antes != Modo::ARRANQUE) {
-    Serial.println("Programando tiempo modo arranque");
-    g_temp_contactor = ahora + TIEMPO_ARRANQUE_CONTACTOR;
-    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
-  }
-
-  if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
-    Serial.println("Programando tiempo modo inicio ciclo");
-    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
-  }
+  cambiosDeModo();
 
   if (g_modo == Modo::DETENIDO) {
     contactor(false);
@@ -248,7 +342,7 @@ void loop() {
     if (g_modo == Modo::ARRANQUE) {
       if (g_temp_contactor <= ahora) {
         contactor(true);
-        g_modo = Modo::INICIO_CICLO;
+        g_modo_siguiente = Modo::INICIO_CICLO;
       }
     } else {
       contactor(true);
@@ -278,7 +372,7 @@ void loop() {
 
     if (g_temp_inicio_ciclo <= ahora) {
       Serial.println("Pasando a modo crusero");
-      g_modo = Modo::CRUSERO;
+      g_modo_siguiente = Modo::CRUSERO;
     }
   }
 
@@ -309,7 +403,7 @@ void loop() {
     }
 
     if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura < TEMPERATURA_FINAL_CICLO) {
-      g_modo = Modo::FINAL_CICLO;
+      g_modo_siguiente = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
     }
   }
@@ -321,8 +415,7 @@ void loop() {
     defrost(false);
     
     if (g_temp_final_ciclo <= ahora) {
-      g_modo = Modo::DEFROST;
-      g_temp_defrost = ahora + TIEMPO_DEFROST;
+      g_modo_siguiente = Modo::DEFROST;
     }
   }
 
@@ -333,12 +426,55 @@ void loop() {
     llenado(false);
     
     if (g_temp_defrost <= ahora) {
-      g_modo = Modo::INICIO_CICLO;
+      g_modo_siguiente = Modo::INICIO_CICLO;
     }
   }
 
+  if (g_bomba_control_manual && g_modo != Modo::DEFROST) {
+    bomba(g_bomba_manual);
+  }
+  if (g_llenado_control_manual && g_modo != Modo::DEFROST) {
+    llenado(g_llenado_manual);
+  }
+
+  actualizarSalidas();
+  nexLoop(nex_listen_list);
   actualizarPantalla(flotador);
   informacionSerial(flotador);
+}
+
+/***************
+ * End of Loop *
+ ***************/
+
+void actualizarSalidas() {
+  digitalWrite(PIN_CONTACTOR_PRINCIPAL, g_contactor ? LOW : HIGH);
+  digitalWrite(PIN_BOMBA, g_bomba ? LOW : HIGH);
+  digitalWrite(PIN_FAN, g_fan ? LOW : HIGH);
+  digitalWrite(PIN_MOTOR, g_motor ? LOW : HIGH);
+  digitalWrite(PIN_LLENADO, g_llenado ? HIGH : LOW);
+  digitalWrite(PIN_DEFROST, g_defrost ? LOW : HIGH);
+}
+
+void cambiosDeModo() {
+  if (g_modo == Modo::ARRANQUE && g_modo_antes != Modo::ARRANQUE) {
+    Serial.println("Programando tiempo modo arranque");
+    g_temp_contactor = ahora + TIEMPO_ARRANQUE_CONTACTOR;
+    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+  }
+
+  if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
+    Serial.println("Programando tiempo modo inicio ciclo");
+    g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+  }
+
+  if (g_modo == Modo::DEFROST && g_modo_antes != g_modo) {
+    Serial.println("Programando tiempo defrost");
+    g_temp_defrost = ahora + TIEMPO_DEFROST;
+    Serial.println("Desactivando modos manuales");
+    g_bomba_control_manual = false;
+    g_llenado_control_manual = false;
+  }
 }
 
 void patronParpadeoLed() {
@@ -400,7 +536,15 @@ void informacionSerial(int flotador) {
   }
 
   if (MONITOR_SERIAL && g_temp_serial <= ahora) {
-    
+    if (g_bomba_control_manual) {
+      Serial.print("Bomba control manual: ");
+      Serial.println(g_bomba_manual);
+    }
+
+    if (g_llenado_control_manual) {
+      Serial.print("Llenado control manual: ");
+      Serial.println(g_llenado_manual);
+    }
 
     Serial.print("Modo: ");
     Serial.print(modoATexto(g_modo));
@@ -428,7 +572,7 @@ void informacionSerial(int flotador) {
     } else {
       Serial.print("    ");
     }
-    if (digitalRead(PIN_BOMBA) == LOW) {
+    if (bomba()) {
       Serial.print("BMB ");
     } else {
       Serial.print("    ");
@@ -478,6 +622,33 @@ void actualizarPantalla(bool flotador) {
     // tMode.setText(modoATexto(g_modo));
     // tDefrost.setText(defrost() ? "ON" : "OFF");
 
+    uint32_t page = -1;
+
+    sendCommand("get dp");
+    recvRetNumber(&page);
+
+    if (page == 1) { // manual control
+
+      if (!g_bomba_control_manual) { // auto
+        // update the button state
+        bAgua.setVal(bomba() ? 1 : 0);
+      } else {
+        bAgua.setVal(g_bomba_manual ? 1 : 0);
+      }
+
+      if (!g_llenado_control_manual) { // auto
+        // update the button state
+        bLlenado.setVal(llenado() ? 1 : 0);
+      } else {
+        bLlenado.setVal(g_llenado_manual ? 1 : 0);
+      }
+
+      bAguaC.setVal(g_bomba_control_manual ? 1 : 0);
+      bAguaC.setText(g_bomba_control_manual ? "Manual" : "Auto");
+      bLlenadoC.setVal(g_llenado_control_manual ? 1 : 0);
+      bLlenadoC.setText(g_llenado_control_manual ? "Manual" : "Auto");
+
+    }
     
     char buffer[32];
 
@@ -548,17 +719,21 @@ void actualizarPantalla(bool flotador) {
 
   if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
     sendCommand("page 5");
+    recvRetCommandFinished();
   }
 
   if (g_modo == Modo::CRUSERO && g_modo_antes != Modo::CRUSERO) {
     sendCommand("page 3");
+    recvRetCommandFinished();
   }
 
   if (g_modo == Modo::FINAL_CICLO && g_modo_antes != Modo::FINAL_CICLO) {
     sendCommand("page 6");
+    recvRetCommandFinished();
   }
 
   if (g_modo == Modo::DEFROST && g_modo_antes != Modo::DEFROST) {
     sendCommand("page 7");
+    recvRetCommandFinished();
   }
 }
