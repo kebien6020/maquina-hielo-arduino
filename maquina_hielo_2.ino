@@ -2,8 +2,10 @@
 #include <DallasTemperature.h>
 #include <Nextion.h>
 #include <stdlib.h>
+#include <EEPROM.h>
 
 #include "src/NexDualButton.h"
+#include "src/NexNumber.h"
 
 // Entradas
 constexpr int PIN_FLOTADOR = 4;
@@ -32,6 +34,10 @@ constexpr auto TEMPERATURA_FINAL_CICLO = 0.0f;
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
 constexpr auto MENSAJES_ADICIONALES = false;
+
+// Direcciones EEPROM
+constexpr auto CONFIG_PRE_DEFROST_DIRECCION = 1;
+constexpr auto CONFIG_PRE_DEFROST_OFFSET = 20;
 
 // Componentes de la interfaz
 auto bReset0 = NexButton(0, 4, "b2");
@@ -79,6 +85,9 @@ auto bLlenado = NexDualButton(1, 4, "bLlenado");
 auto bLlenadoC = NexDualButton(1, 6, "bLlenadoC");
 auto bDefrost = NexDualButton(1, 7, "bDefrost");
 
+auto slPreDefrost = NexSlider(2, 3, "slPreDefrost");
+auto nPreDefrost = NexNumber(2, 4, "nPreDefrost");
+
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
   &bReset0,
@@ -89,6 +98,7 @@ NexTouch* nex_listen_list[] = {
   &bLlenadoC,
   &bProcesoActual,
   &bDefrost,
+  &slPreDefrost,
   NULL
 };
 
@@ -100,6 +110,7 @@ void modoDefrostCallback(void *);
 void manualLlenadoCallback(void *);
 void manualBombaControlCallback(void *);
 void manualLlenadoControlCallback(void *);
+void configPreDefrostCallback(void *);
 
 OneWire wire{PIN_SENSOR_TEMPERATURA};
 DallasTemperature sensor{&wire};
@@ -128,6 +139,8 @@ bool defrost() { return digitalRead(PIN_DEFROST) == LOW; }
 bool g_motor = false;
 void motor(bool state) { g_motor = state; }
 bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
+
+auto g_config_temperatura_pre_defrost = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -168,6 +181,13 @@ void setup() {
   bLlenadoC.attachPop(manualLlenadoControlCallback);
   bProcesoActual.attachPop(irProcesoActualCallback);
   bDefrost.attachPop(modoDefrostCallback);
+
+  slPreDefrost.attachPop(configPreDefrostCallback);
+
+  // Load from EEPROM
+  g_config_temperatura_pre_defrost = static_cast<int8_t>(EEPROM.read(CONFIG_PRE_DEFROST_DIRECCION));
+  Serial.print("Leido de EEPROM valor ");
+  Serial.println(g_config_temperatura_pre_defrost);
 }
 
 enum class Modo {
@@ -303,6 +323,21 @@ void irProcesoActualCallback(void *) {
   }
 
   recvRetCommandFinished();
+}
+
+void configPreDefrostCallback(void *) {
+  uint32_t value;
+  slPreDefrost.getValue(&value);
+
+  const auto temp = static_cast<int8_t>(value) - CONFIG_PRE_DEFROST_OFFSET;
+
+  Serial.print("Guardando en EEPROM en direccion ");
+  Serial.print(CONFIG_PRE_DEFROST_DIRECCION);
+  Serial.print(" el valor ");
+  Serial.println(static_cast<uint8_t>(temp));
+
+  EEPROM.write(CONFIG_PRE_DEFROST_DIRECCION, static_cast<uint8_t>(temp));
+  g_config_temperatura_pre_defrost = temp;
 }
 
 void patronParpadeoLed();
@@ -612,7 +647,11 @@ void informacionSerial(int flotador) {
   }
 }
 
+auto pagina_anterior = 0;
+uint32_t pagina = -1;
+
 void actualizarPantalla(bool flotador) {
+  
   if (g_temp_serial <= ahora) {
     // tFlt.setText(flotador ? "Lleno" : "Vacio");
     // char buffer_temperatura[32];
@@ -622,12 +661,17 @@ void actualizarPantalla(bool flotador) {
     // tMode.setText(modoATexto(g_modo));
     // tDefrost.setText(defrost() ? "ON" : "OFF");
 
-    uint32_t page = -1;
 
+    pagina_anterior = pagina;
     sendCommand("get dp");
-    recvRetNumber(&page);
+    recvRetNumber(&pagina);
 
-    if (page == 1) { // manual control
+    if (pagina == 2 && pagina != pagina_anterior) {
+      slPreDefrost.setValue(g_config_temperatura_pre_defrost + CONFIG_PRE_DEFROST_OFFSET);
+      nPreDefrost.setValue(g_config_temperatura_pre_defrost);
+    }
+
+    if (pagina == 1) { // manual control
 
       if (!g_bomba_control_manual) { // auto
         // update the button state
