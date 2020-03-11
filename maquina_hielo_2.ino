@@ -39,6 +39,13 @@ constexpr auto MENSAJES_ADICIONALES = false;
 constexpr auto CONFIG_PRE_DEFROST_DIRECCION = 1;
 constexpr auto CONFIG_PRE_DEFROST_OFFSET = 20;
 
+constexpr auto CONFIG_DEFROST_DIRECCION = 2;
+constexpr auto CONFIG_DEFROST_OFFSET = 20;
+
+constexpr auto CONFIG_INICIO_DIRECCION = 3;
+
+constexpr auto CONFIG_TLLENADO_DIRECCION = 4;
+
 // Componentes de la interfaz
 auto bReset0 = NexButton(0, 4, "b2");
 NexButton* todosReset[] = {&bReset0};
@@ -88,6 +95,15 @@ auto bDefrost = NexDualButton(1, 7, "bDefrost");
 auto slPreDefrost = NexSlider(2, 3, "slPreDefrost");
 auto nPreDefrost = NexNumber(2, 4, "nPreDefrost");
 
+auto slDefrost = NexSlider(2, 7, "slDefrost");
+auto nDefrost = NexNumber(2, 8, "nDefrost");
+
+auto slInicio = NexSlider(2, 11, "slInicio");
+auto nInicio = NexNumber(2, 12, "nInicio");
+
+auto slTLlenado = NexSlider(2, 15, "slTLlenado");
+auto nTLlenado = NexNumber(2, 16, "nTLlenado");
+
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
   &bReset0,
@@ -99,6 +115,9 @@ NexTouch* nex_listen_list[] = {
   &bProcesoActual,
   &bDefrost,
   &slPreDefrost,
+  &slDefrost,
+  &slInicio,
+  &slTLlenado,
   NULL
 };
 
@@ -111,6 +130,9 @@ void manualLlenadoCallback(void *);
 void manualBombaControlCallback(void *);
 void manualLlenadoControlCallback(void *);
 void configPreDefrostCallback(void *);
+void configDefrostCallback(void *);
+void configInicioCallback(void *);
+void configTLlenadoCallback(void *);
 
 OneWire wire{PIN_SENSOR_TEMPERATURA};
 DallasTemperature sensor{&wire};
@@ -141,6 +163,9 @@ void motor(bool state) { g_motor = state; }
 bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
 
 auto g_config_temperatura_pre_defrost = 0;
+auto g_config_temperatura_defrost = 0;
+auto g_config_temperatura_inicio = 60;
+auto g_config_tiempo_llenado = 30;
 
 void setup() {
   Serial.begin(115200);
@@ -183,11 +208,15 @@ void setup() {
   bDefrost.attachPop(modoDefrostCallback);
 
   slPreDefrost.attachPop(configPreDefrostCallback);
+  slDefrost.attachPop(configDefrostCallback);
+  slInicio.attachPop(configInicioCallback);
+  slTLlenado.attachPop(configTLlenadoCallback);
 
   // Load from EEPROM
   g_config_temperatura_pre_defrost = static_cast<int8_t>(EEPROM.read(CONFIG_PRE_DEFROST_DIRECCION));
-  Serial.print("Leido de EEPROM valor ");
-  Serial.println(g_config_temperatura_pre_defrost);
+  g_config_temperatura_defrost = static_cast<int8_t>(EEPROM.read(CONFIG_DEFROST_DIRECCION));
+  g_config_temperatura_inicio = static_cast<int8_t>(EEPROM.read(CONFIG_INICIO_DIRECCION));
+  g_config_tiempo_llenado = static_cast<int8_t>(EEPROM.read(CONFIG_TLLENADO_DIRECCION));
 }
 
 enum class Modo {
@@ -338,6 +367,50 @@ void configPreDefrostCallback(void *) {
 
   EEPROM.write(CONFIG_PRE_DEFROST_DIRECCION, static_cast<uint8_t>(temp));
   g_config_temperatura_pre_defrost = temp;
+}
+
+void configDefrostCallback(void *) {
+  uint32_t value;
+  slDefrost.getValue(&value);
+
+  const auto temp = static_cast<int8_t>(value) - CONFIG_DEFROST_OFFSET;
+
+  Serial.print("Guardando en EEPROM en direccion ");
+  Serial.print(CONFIG_DEFROST_DIRECCION);
+  Serial.print(" el valor ");
+  Serial.println(static_cast<uint8_t>(temp));
+
+  EEPROM.write(CONFIG_DEFROST_DIRECCION, static_cast<uint8_t>(temp));
+  g_config_temperatura_defrost = temp;
+}
+
+void configInicioCallback(void *) {
+  uint32_t value;
+  slInicio.getValue(&value);
+
+  const auto temp = static_cast<int8_t>(value);
+
+  Serial.print("Guardando en EEPROM en direccion ");
+  Serial.print(CONFIG_INICIO_DIRECCION);
+  Serial.print(" el valor ");
+  Serial.println(static_cast<uint8_t>(temp));
+
+  EEPROM.write(CONFIG_INICIO_DIRECCION, static_cast<uint8_t>(temp));
+  g_config_temperatura_inicio = temp;
+}
+void configTLlenadoCallback(void *) {
+  uint32_t value;
+  slTLlenado.getValue(&value);
+
+  const auto tiempo = static_cast<int8_t>(value);
+
+  Serial.print("Guardando en EEPROM en direccion ");
+  Serial.print(CONFIG_TLLENADO_DIRECCION);
+  Serial.print(" el valor ");
+  Serial.println(static_cast<uint8_t>(tiempo));
+
+  EEPROM.write(CONFIG_TLLENADO_DIRECCION, static_cast<uint8_t>(tiempo));
+  g_config_tiempo_llenado = tiempo;
 }
 
 void patronParpadeoLed();
@@ -666,9 +739,18 @@ void actualizarPantalla(bool flotador) {
     sendCommand("get dp");
     recvRetNumber(&pagina);
 
-    if (pagina == 2 && pagina != pagina_anterior) {
+    if (pagina == 2 && pagina != pagina_anterior) { // configuraciones
       slPreDefrost.setValue(g_config_temperatura_pre_defrost + CONFIG_PRE_DEFROST_OFFSET);
       nPreDefrost.setValue(g_config_temperatura_pre_defrost);
+
+      slDefrost.setValue(g_config_temperatura_defrost + CONFIG_DEFROST_OFFSET);
+      nDefrost.setValue(g_config_temperatura_defrost);
+
+      slInicio.setValue(g_config_temperatura_inicio);
+      nInicio.setValue(g_config_temperatura_inicio);
+
+      slTLlenado.setValue(g_config_tiempo_llenado);
+      nTLlenado.setValue(g_config_tiempo_llenado);
     }
 
     if (pagina == 1) { // manual control
