@@ -22,14 +22,10 @@ constexpr int PIN_MOTOR = 11;
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
-constexpr auto TIEMPO_PREVIO_LLENADO_CRUSERO = 30ul * 1000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
 constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
-
-// Temperaturas
-constexpr auto TEMPERATURA_FINAL_CICLO = 0.0f;
 
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
@@ -103,6 +99,7 @@ auto nInicio = NexNumber(2, 12, "nInicio");
 
 auto slTLlenado = NexSlider(2, 15, "slTLlenado");
 auto nTLlenado = NexNumber(2, 16, "nTLlenado");
+auto tTemperaturaConfig = NexText(2, 19, "tTemp");
 
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
@@ -490,7 +487,7 @@ void loop() {
     bomba(true);
 
     if (flotador == HIGH && flotador_antes == LOW) { // menos de lleno y justo cambio
-      g_temp_crusero = ahora + TIEMPO_PREVIO_LLENADO_CRUSERO; // poner a correr tiempo
+      g_temp_crusero = ahora + (g_config_tiempo_llenado * 1000ul); // poner a correr tiempo
       if (MENSAJES_ADICIONALES) {
         Serial.println("Programando el llenado");
       }
@@ -510,7 +507,7 @@ void loop() {
       }
     }
 
-    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura < TEMPERATURA_FINAL_CICLO) {
+    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura < g_config_temperatura_pre_defrost) {
       g_modo_siguiente = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
     }
@@ -525,6 +522,10 @@ void loop() {
     if (g_temp_final_ciclo <= ahora) {
       g_modo_siguiente = Modo::DEFROST;
     }
+
+    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura < g_config_temperatura_defrost) {
+      g_modo_siguiente = Modo::DEFROST;
+    }
   }
 
   if (g_modo == Modo::DEFROST) {
@@ -534,6 +535,10 @@ void loop() {
     llenado(false);
     
     if (g_temp_defrost <= ahora) {
+      g_modo_siguiente = Modo::INICIO_CICLO;
+    }
+
+    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura > g_config_temperatura_inicio) {
       g_modo_siguiente = Modo::INICIO_CICLO;
     }
   }
@@ -724,6 +729,8 @@ auto pagina_anterior = 0;
 uint32_t pagina = -1;
 
 void actualizarPantalla(bool flotador) {
+
+  char buffer[32];
   
   if (g_temp_serial <= ahora) {
     // tFlt.setText(flotador ? "Lleno" : "Vacio");
@@ -751,6 +758,9 @@ void actualizarPantalla(bool flotador) {
 
       slTLlenado.setValue(g_config_tiempo_llenado);
       nTLlenado.setValue(g_config_tiempo_llenado);
+
+      dtostrf(g_temperatura, 6, 1, buffer);
+      tTemperaturaConfig.setText(buffer);
     }
 
     if (pagina == 1) { // manual control
@@ -775,8 +785,6 @@ void actualizarPantalla(bool flotador) {
       bLlenadoC.setText(g_llenado_control_manual ? "Manual" : "Auto");
 
     }
-    
-    char buffer[32];
 
     if (g_modo == Modo::ARRANQUE) {
       itoa((g_temp_contactor - ahora) / 1000ul, buffer, 10);
@@ -784,7 +792,7 @@ void actualizarPantalla(bool flotador) {
       tBombaArr.setText(bomba() ? "ON" : "OFF");
       tFanArr.setText(fan() ? "ON" : "OFF");
       tLlenadoArr.setText(llenado() ? "ON" : "OFF");
-      tFltArr.setText(flotador ? "ON" : "OFF");
+      tFltArr.setText(flotador ? "VACIO" : "LLENO");
     }
 
     if (g_modo == Modo::INICIO_CICLO) {
@@ -793,14 +801,14 @@ void actualizarPantalla(bool flotador) {
       tBombaInicio.setText(bomba() ? "ON" : "OFF");
       tFanInicio.setText(fan() ? "ON" : "OFF");
       tLlenadoInicio.setText(llenado() ? "ON" : "OFF");
-      tFltInicio.setText(flotador ? "ON" : "OFF");
+      tFltInicio.setText(flotador ? "VACIO" : "LLENO");
     }
 
     if (g_modo == Modo::CRUSERO) {
       tBombaCrusero.setText(bomba() ? "ON" : "OFF");
       tFanCrusero.setText(fan() ? "ON" : "OFF");
       tLlenadoCrusero.setText(llenado() ? "ON": "OFF");
-      tFltCrusero.setText(flotador ? "ON": "OFF");
+      tFltCrusero.setText(flotador ? "VACIO": "LLENO");
       dtostrf(g_temperatura, 6, 1, buffer);
       tTemperaturaCrusero.setText(buffer);
       
