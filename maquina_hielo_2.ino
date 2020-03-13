@@ -27,6 +27,8 @@ constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
 constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
+constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
+
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
 constexpr auto MENSAJES_ADICIONALES = false;
@@ -101,6 +103,8 @@ auto slTLlenado = NexSlider(2, 15, "slTLlenado");
 auto nTLlenado = NexNumber(2, 16, "nTLlenado");
 auto tTemperaturaConfig = NexText(2, 19, "tTemp");
 
+auto tFalla = NexText(8, 2, "tFalla");
+
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
   &bReset0,
@@ -131,10 +135,12 @@ void configDefrostCallback(void *);
 void configInicioCallback(void *);
 void configTLlenadoCallback(void *);
 
+// Sensor de temperatura
 OneWire wire{PIN_SENSOR_TEMPERATURA};
 DallasTemperature sensor{&wire};
 DeviceAddress deviceAddress;
 
+// Funciones de salida
 bool g_contactor = false;
 void contactor(bool state) { g_contactor = state; }
 bool contactor() { return digitalRead(PIN_CONTACTOR_PRINCIPAL) == LOW; }
@@ -159,6 +165,7 @@ bool g_motor = false;
 void motor(bool state) { g_motor = state; }
 bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
 
+// Globales configurables en UI
 auto g_config_temperatura_pre_defrost = 0;
 auto g_config_temperatura_defrost = 0;
 auto g_config_temperatura_inicio = 60;
@@ -418,6 +425,7 @@ void leerTemperatura();
 void actualizarPantalla(bool flotador);
 void actualizarSalidas();
 void cambiosDeModo();
+void alarmas();
 
 auto flotador = false; // true -> lleno
 
@@ -456,14 +464,14 @@ void loop() {
     defrost(false);
     if (g_temp_debounce_inicio <= ahora) {
       g_temp_debounce_inicio = ahora + 1000; // programar siguiente actualizacion para dentro de 1 segundo
-      if (flotador == HIGH) { // menos de lleno
+      if (flotador) { // menos de lleno
         llenado(true);
       } else { // lleno
         llenado(false);
       }
     }
 
-    if (flotador == LOW) { // lleno
+    if (!flotador) { // lleno
       bomba(true); // prender la bomba
       g_temp_bomba_inicio = ahora + TIEMPO_BOMBA_INICIO; // programar su apagado
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
@@ -550,6 +558,7 @@ void loop() {
     llenado(g_llenado_manual);
   }
 
+  alarmas();
   actualizarSalidas();
   nexLoop(nex_listen_list);
   actualizarPantalla(flotador);
@@ -639,6 +648,29 @@ void leerTemperatura() {
   sensor.requestTemperatures();
   const auto temp = sensor.getTempCByIndex(0);
   if (temp > DEVICE_DISCONNECTED_C) g_temperatura = temp;
+}
+
+auto g_timestamp_inicio_llenado = 0ul;
+
+void alarmas() {
+  // Timestamps
+  if (g_llenado && g_llenado != llenado()) {
+    g_timestamp_inicio_llenado = ahora;
+  }
+
+  // Alarmas
+  char buffer[64];
+
+  auto tiempo_llenando = ahora - g_timestamp_inicio_llenado;
+  if (llenado() && tiempo_llenando > TIEMPO_ALARMA_LLENADO) {
+    g_modo_siguiente = Modo::DETENIDO;
+
+    sendCommand("page 8"); // fallas
+    recvRetCommandFinished();
+
+    sprintf(buffer, "Tiempo de llenado super\xF3 %ds", (int)(TIEMPO_ALARMA_LLENADO / 1000ul));
+    tFalla.setText(buffer);
+  }
 }
 
 void informacionSerial(int flotador) {
@@ -733,14 +765,6 @@ void actualizarPantalla(bool flotador) {
   char buffer[32];
   
   if (g_temp_serial <= ahora) {
-    // tFlt.setText(flotador ? "Lleno" : "Vacio");
-    // char buffer_temperatura[32];
-    // dtostrf(g_temperatura, 6, 1, buffer_temperatura);
-    // tTmp.setText(buffer_temperatura);
-    // tContact.setText(contactor() ? "ON" : "OFF");
-    // tMode.setText(modoATexto(g_modo));
-    // tDefrost.setText(defrost() ? "ON" : "OFF");
-
 
     pagina_anterior = pagina;
     sendCommand("get dp");
