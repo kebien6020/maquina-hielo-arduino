@@ -1,5 +1,6 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include "src/NexConfig.h"
 #include <Nextion.h>
 #include <stdlib.h>
 #include <EEPROM.h>
