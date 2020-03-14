@@ -1,6 +1,5 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include "src/NexConfig.h"
 #include <Nextion.h>
 #include <stdlib.h>
 #include <EEPROM.h>
@@ -9,16 +8,20 @@
 #include "src/NexNumber.h"
 
 // Entradas
-constexpr int PIN_FLOTADOR = 4;
+constexpr int PIN_FLOTADOR = 2;
 constexpr int PIN_SENSOR_TEMPERATURA = A0;
+
+constexpr int PIN_FLT_TK_ALTO = 3;
+constexpr int PIN_FLT_TK_BAJO = 4;
 // Salidas
 constexpr int PIN_CONTACTOR_PRINCIPAL = 11;
 constexpr int PIN_DEFROST = 10;
 constexpr int PIN_FAN = 9;
 constexpr int PIN_BOMBA = 8;
-// constexpr int PIN_LLENADO_TK_ALMACENAMIENTO = 7;
+constexpr int PIN_SOLENOIDE_TK_ALMACENAMIENTO = 7;
+constexpr int PIN_BOMBA_TK_ALMACENAMIENTO = 5;
 constexpr int PIN_LLENADO = 6;
-constexpr int PIN_MOTOR = 11;
+constexpr int PIN_MOTOR = A1;
 
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
@@ -29,6 +32,9 @@ constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
+constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 1ul * 60ul * 1000ul;
+
+constexpr auto TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO = 10000ul;
 
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
@@ -166,23 +172,37 @@ bool g_motor = false;
 void motor(bool state) { g_motor = state; }
 bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
 
+bool g_solenoide_tk = false;
+void solenoide_tk(bool state) { g_solenoide_tk = state; }
+bool solenoide_tk() { return digitalRead(PIN_SOLENOIDE_TK_ALMACENAMIENTO) == HIGH; }
+
+bool g_bomba_tk = false;
+void bomba_tk(bool state) { g_bomba_tk = state; }
+bool bomba_tk() { return digitalRead(PIN_BOMBA_TK_ALMACENAMIENTO) == LOW; }
+
 // Globales configurables en UI
 auto g_config_temperatura_pre_defrost = 0;
 auto g_config_temperatura_defrost = 0;
 auto g_config_temperatura_inicio = 60;
 auto g_config_tiempo_llenado = 30;
 
+auto g_timestamp_solenoide_tk_on = 0ul;
+
 void setup() {
   Serial.begin(115200);
   
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_SENSOR_TEMPERATURA, INPUT);
-  pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT); contactor(false);
-  pinMode(PIN_LLENADO, OUTPUT);             llenado(false);
-  pinMode(PIN_FAN, OUTPUT);                 fan(false);
-  pinMode(PIN_BOMBA, OUTPUT);               bomba(false);
-  pinMode(PIN_DEFROST, OUTPUT);             defrost(false);
-  pinMode(LED_BUILTIN, OUTPUT);             digitalWrite(LED_BUILTIN, LOW);
+  pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
+  pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
+  pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT);         contactor(false);
+  pinMode(PIN_LLENADO, OUTPUT);                     llenado(false);
+  pinMode(PIN_FAN, OUTPUT);                         fan(false);
+  pinMode(PIN_BOMBA, OUTPUT);                       bomba(false);
+  pinMode(PIN_DEFROST, OUTPUT);                     defrost(false);
+  pinMode(LED_BUILTIN, OUTPUT);                     digitalWrite(LED_BUILTIN, LOW);
+  pinMode(PIN_SOLENOIDE_TK_ALMACENAMIENTO, OUTPUT); solenoide_tk(false);
+  pinMode(PIN_BOMBA_TK_ALMACENAMIENTO, OUTPUT);     bomba_tk(false);
 
   // Sensor de temperatura
   sensor.begin();
@@ -222,6 +242,14 @@ void setup() {
   g_config_temperatura_defrost = static_cast<int8_t>(EEPROM.read(CONFIG_DEFROST_DIRECCION));
   g_config_temperatura_inicio = static_cast<int8_t>(EEPROM.read(CONFIG_INICIO_DIRECCION));
   g_config_tiempo_llenado = static_cast<int8_t>(EEPROM.read(CONFIG_TLLENADO_DIRECCION));
+
+  // Empezar a contar tiempo solenoide si al arrancar
+  // el tk almacenamiento esta vacio
+  const auto flotador_tk_bajo = digitalRead(PIN_FLT_TK_BAJO) == LOW;
+  if (flotador_tk_bajo == HIGH) {
+    g_timestamp_solenoide_tk_on = millis();
+    solenoide_tk(true);
+  }
 }
 
 enum class Modo {
@@ -267,8 +295,6 @@ auto g_llenado_manual = false;
 auto g_temperatura = 25.0f;
 
 auto ahora = 0ul;
-
-auto flotador_antes = HIGH;
 
 // Callbacks interfaz
 void resetCallback(void *) {
@@ -429,13 +455,24 @@ void cambiosDeModo();
 void alarmas();
 
 auto flotador = false; // true -> lleno
+auto flotador_antes = false;
+
+auto flotador_tk_alto = false; // true -> nivel por encima de high
+auto flotador_tk_alto_antes = false;
+auto flotador_tk_bajo = false; // true -> nivel por encima de low
+auto flotador_tk_bajo_antes = false;
 
 void loop() {
   g_modo_antes = g_modo;
   g_modo = g_modo_siguiente;
 
   flotador_antes = flotador;
-  flotador = digitalRead(PIN_FLOTADOR) == LOW;
+  flotador = digitalRead(PIN_FLOTADOR) == HIGH;
+
+  flotador_tk_alto_antes = flotador_tk_alto;
+  flotador_tk_alto = digitalRead(PIN_FLT_TK_ALTO) == HIGH;
+  flotador_tk_bajo_antes = flotador_tk_bajo;
+  flotador_tk_bajo = digitalRead(PIN_FLT_TK_BAJO) == HIGH;
   
   ahora = millis();
 
@@ -443,6 +480,7 @@ void loop() {
   inicializarContadores();
   leerTemperatura();
   cambiosDeModo();
+  logicaTanque();
 
   if (g_modo == Modo::DETENIDO) {
     contactor(false);
@@ -450,12 +488,13 @@ void loop() {
     bomba(false);
     fan(false);
     llenado(false);
+    solenoide_tk(false);
+    bomba_tk(false);
   }
 
   if (g_modo == Modo::INICIO_CICLO || g_modo == Modo::ARRANQUE) {
     if (g_modo == Modo::ARRANQUE) {
       if (g_temp_contactor <= ahora) {
-        contactor(true);
         g_modo_siguiente = Modo::INICIO_CICLO;
       }
     } else {
@@ -577,16 +616,20 @@ void actualizarSalidas() {
   digitalWrite(PIN_MOTOR, g_motor ? LOW : HIGH);
   digitalWrite(PIN_LLENADO, g_llenado ? HIGH : LOW);
   digitalWrite(PIN_DEFROST, g_defrost ? LOW : HIGH);
+  digitalWrite(PIN_SOLENOIDE_TK_ALMACENAMIENTO, g_solenoide_tk ? HIGH : LOW);
+  digitalWrite(PIN_BOMBA_TK_ALMACENAMIENTO, g_bomba_tk ? LOW : HIGH);
 }
 
 void cambiosDeModo() {
   if (g_modo == Modo::ARRANQUE && g_modo_antes != Modo::ARRANQUE) {
     Serial.println("Programando tiempo modo arranque");
     g_temp_contactor = ahora + TIEMPO_ARRANQUE_CONTACTOR;
+    // Requerido porque arranque e inicio comparten la logica
     g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
   }
 
   if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
+    contactor(true);
     Serial.println("Programando tiempo modo inicio ciclo");
     g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
   }
@@ -597,6 +640,35 @@ void cambiosDeModo() {
     Serial.println("Desactivando modos manuales");
     g_bomba_control_manual = false;
     g_llenado_control_manual = false;
+  }
+}
+
+void logicaTanque() {
+  const auto evento_bajo_nivel = 
+    flotador_tk_bajo != flotador_tk_bajo_antes && // hubo cambio en sensor de nivel bajo, y...
+    flotador_tk_bajo == false;                    // cambió a off
+  
+  if (evento_bajo_nivel) {
+    solenoide_tk(true);
+    g_timestamp_solenoide_tk_on = ahora;
+  }
+
+  const auto tiempo_solenoide_encendida = ahora - g_timestamp_solenoide_tk_on;
+  const auto finalizo_temporizador_solenoide =
+    solenoide_tk() && // la solenoide esta encendida, y...
+    tiempo_solenoide_encendida >= TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO; // ya paso el tiempo de solenoide
+  
+  if (finalizo_temporizador_solenoide) {
+    bomba_tk(true);
+  }
+
+  const auto evento_alto_nivel =
+    flotador_tk_alto != flotador_tk_alto_antes && // hubo cambio en el sensor de nivel alto, y...
+    flotador_tk_alto == true;                     // cambió a on
+
+  if (evento_alto_nivel) {
+    bomba_tk(false);
+    solenoide_tk(false);
   }
 }
 
@@ -638,10 +710,10 @@ void inicializarContadores() {
     g_temp_serial = ahora;
   }
   if (g_temp_inicio_ciclo == 0) {
-    g_temp_contactor = ahora + TIEMPO_MODO_INICIO_CICLO;
+    g_temp_inicio_ciclo = ahora;
   }
   if (g_temp_contactor == 0) {
-    g_temp_contactor = ahora + TIEMPO_ARRANQUE_CONTACTOR;
+    g_temp_contactor = ahora;
   }
 }
 
@@ -651,7 +723,15 @@ void leerTemperatura() {
   if (temp > DEVICE_DISCONNECTED_C) g_temperatura = temp;
 }
 
+void pantallaFalla(const char* mensaje) {
+  sendCommand("page 8"); // fallas
+  recvRetCommandFinished();
+
+  tFalla.setText(mensaje);
+}
+
 auto g_timestamp_inicio_llenado = 0ul;
+auto g_timestamp_inicio_llenado_tk = 0ul;
 
 void alarmas() {
   // Timestamps
@@ -659,18 +739,37 @@ void alarmas() {
     g_timestamp_inicio_llenado = ahora;
   }
 
+  if (g_bomba_tk && g_bomba_tk != bomba_tk()) {
+    g_timestamp_inicio_llenado_tk = ahora;
+  }
+
   // Alarmas
   char buffer[64];
 
+  // Alarma tiempo llenado
   auto tiempo_llenando = ahora - g_timestamp_inicio_llenado;
   if (llenado() && tiempo_llenando > TIEMPO_ALARMA_LLENADO) {
     g_modo_siguiente = Modo::DETENIDO;
 
-    sendCommand("page 8"); // fallas
-    recvRetCommandFinished();
-
     sprintf(buffer, "Tiempo de llenado super\xF3 %ds", (int)(TIEMPO_ALARMA_LLENADO / 1000ul));
-    tFalla.setText(buffer);
+    pantallaFalla(buffer);
+  }
+
+  // Alarma sensor bajo dañado
+  if (!flotador_tk_bajo && flotador_tk_alto) {
+    pantallaFalla("Falla en sensor de nivel bajo");
+  }
+
+  // Alarma tiempo llenado tk almacenamiento
+  auto tiempo_llenando_tk = ahora - g_timestamp_inicio_llenado_tk;
+  if (bomba_tk() && tiempo_llenando_tk > TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO) {
+    g_modo_siguiente = Modo::DETENIDO;
+    solenoide_tk(false);
+    bomba_tk(false);
+    g_timestamp_inicio_llenado_tk = ahora; // resetear contador de alarma
+
+    sprintf(buffer, "Tiempo de llenado tk alamcenamiento super\xF3 %ds", (int)(TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO / 1000ul));
+    pantallaFalla(buffer);
   }
 }
 
@@ -701,8 +800,23 @@ void informacionSerial(int flotador) {
     } else {
       Serial.print("    ");
     }
+    if (flotador_tk_bajo) {
+      Serial.print("FLB ");
+    } else {
+      Serial.print("    ");
+    }
+    if (flotador_tk_alto) {
+      Serial.print("FLA ");
+    } else {
+      Serial.print("    ");
+    }
 
     Serial.print(" - Salidas: ");
+    if (digitalRead(PIN_CONTACTOR_PRINCIPAL) == LOW) {
+      Serial.print("CTR ");
+    } else {
+      Serial.print("    ");
+    }
     if (digitalRead(PIN_DEFROST) == LOW) {
       Serial.print("DEF ");
     } else {
@@ -720,6 +834,16 @@ void informacionSerial(int flotador) {
     }
     if (bomba()) {
       Serial.print("BMB ");
+    } else {
+      Serial.print("    ");
+    }
+    if (solenoide_tk()) {
+      Serial.print("STK ");
+    } else {
+      Serial.print("    ");
+    }
+    if (bomba_tk()) {
+      Serial.print("BTK ");
     } else {
       Serial.print("    ");
     }
