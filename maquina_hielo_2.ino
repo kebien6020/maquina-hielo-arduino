@@ -1,15 +1,16 @@
-#include <OneWire.h>
-#include <DallasTemperature.h>
 #include <Nextion.h>
 #include <stdlib.h>
 #include <EEPROM.h>
+#include <max6675.h>
 
 #include "src/NexDualButton.h"
 #include "src/NexNumber.h"
 
 // Entradas
 constexpr int PIN_FLOTADOR = 2;
-constexpr int PIN_SENSOR_TEMPERATURA = A0;
+constexpr int PIN_TERMOCUPLA_SCK = A0;
+constexpr int PIN_TERMOCUPLA_CS = A1;
+constexpr int PIN_TERMOCUPLA_D0 = A2;
 
 constexpr int PIN_FLT_TK_ALTO = 3;
 constexpr int PIN_FLT_TK_BAJO = 4;
@@ -32,7 +33,8 @@ constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
-constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 1ul * 60ul * 1000ul;
+constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 10ul * 60ul * 1000ul;
+constexpr auto TIEMPO_ALARMA_DOS_CICLOS = 20ul * 60ul * 1000ul;
 
 constexpr auto TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO = 10000ul;
 
@@ -143,9 +145,7 @@ void configInicioCallback(void *);
 void configTLlenadoCallback(void *);
 
 // Sensor de temperatura
-OneWire wire{PIN_SENSOR_TEMPERATURA};
-DallasTemperature sensor{&wire};
-DeviceAddress deviceAddress;
+MAX6675 termocupla(PIN_TERMOCUPLA_SCK, PIN_TERMOCUPLA_CS, PIN_TERMOCUPLA_D0);
 
 // Funciones de salida
 bool g_contactor = false;
@@ -192,7 +192,6 @@ void setup() {
   Serial.begin(115200);
   
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
-  pinMode(PIN_SENSOR_TEMPERATURA, INPUT);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
   pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT);         contactor(false);
@@ -203,11 +202,6 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);                     digitalWrite(LED_BUILTIN, LOW);
   pinMode(PIN_SOLENOIDE_TK_ALMACENAMIENTO, OUTPUT); solenoide_tk(false);
   pinMode(PIN_BOMBA_TK_ALMACENAMIENTO, OUTPUT);     bomba_tk(false);
-
-  // Sensor de temperatura
-  sensor.begin();
-  sensor.setWaitForConversion(false);
-	sensor.getAddress(deviceAddress, 0);
 
   // Pantalla
   {
@@ -292,7 +286,7 @@ auto g_bomba_manual = false;
 auto g_llenado_control_manual = false;
 auto g_llenado_manual = false;
 
-auto g_temperatura = 25.0f;
+auto g_temperatura = 25.0;
 
 auto ahora = 0ul;
 
@@ -555,7 +549,7 @@ void loop() {
       }
     }
 
-    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura < g_config_temperatura_pre_defrost) {
+    if (g_temperatura < g_config_temperatura_pre_defrost) {
       g_modo_siguiente = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
     }
@@ -571,7 +565,7 @@ void loop() {
       g_modo_siguiente = Modo::DEFROST;
     }
 
-    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura < g_config_temperatura_defrost) {
+    if (g_temperatura < g_config_temperatura_defrost) {
       g_modo_siguiente = Modo::DEFROST;
     }
   }
@@ -586,7 +580,7 @@ void loop() {
       g_modo_siguiente = Modo::INICIO_CICLO;
     }
 
-    if (g_temperatura > DEVICE_DISCONNECTED_C && g_temperatura > g_config_temperatura_inicio) {
+    if (g_temperatura > g_config_temperatura_inicio) {
       g_modo_siguiente = Modo::INICIO_CICLO;
     }
   }
@@ -717,10 +711,17 @@ void inicializarContadores() {
   }
 }
 
+auto g_timestamp_ultima_lectura_termocupla = 0ul;
 void leerTemperatura() {
-  sensor.requestTemperatures();
-  const auto temp = sensor.getTempCByIndex(0);
-  if (temp > DEVICE_DISCONNECTED_C) g_temperatura = temp;
+  const auto tiempo_desde_lectura = ahora - g_timestamp_ultima_lectura_termocupla;
+
+  if (tiempo_desde_lectura > 2000) {
+    const auto temp = termocupla.readCelsius();
+    if (!isnan(temp))
+      g_temperatura = temp;
+
+    g_timestamp_ultima_lectura_termocupla = ahora;
+  }
 }
 
 void pantallaFalla(const char* mensaje) {
@@ -732,6 +733,10 @@ void pantallaFalla(const char* mensaje) {
 
 auto g_timestamp_inicio_llenado = 0ul;
 auto g_timestamp_inicio_llenado_tk = 0ul;
+auto g_timestamp_inicio_ciclo = 0ul;
+
+auto g_tiempo_ciclo_prev = 0ul; // anterior anterior
+auto g_tiempo_ciclo = 0ul;      // anterior
 
 void alarmas() {
   // Timestamps
@@ -741,6 +746,10 @@ void alarmas() {
 
   if (g_bomba_tk && g_bomba_tk != bomba_tk()) {
     g_timestamp_inicio_llenado_tk = ahora;
+  }
+
+  if (g_modo == Modo::INICIO_CICLO && g_modo != g_modo_antes) {
+    g_timestamp_inicio_ciclo = ahora;
   }
 
   // Alarmas
@@ -771,6 +780,26 @@ void alarmas() {
     sprintf(buffer, "Tiempo de llenado tk alamcenamiento super\xF3 %ds", (int)(TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO / 1000ul));
     pantallaFalla(buffer);
   }
+
+  // Alarma tiempo ciclo muy corto
+  if (g_modo == Modo::INICIO_CICLO && g_modo != g_modo_antes) {
+    if (g_timestamp_inicio_ciclo != 0ul) {
+      const auto duracion_ciclo = ahora - g_timestamp_inicio_ciclo;
+      g_tiempo_ciclo_prev = g_tiempo_ciclo;
+      g_tiempo_ciclo = duracion_ciclo;
+    }
+
+    if (g_tiempo_ciclo > 0ul && g_tiempo_ciclo_prev > 0ul) {
+      const auto sumatoria_tiempos_ciclo = g_tiempo_ciclo + g_tiempo_ciclo_prev;
+      if (sumatoria_tiempos_ciclo > TIEMPO_ALARMA_DOS_CICLOS) {
+        g_modo_siguiente = Modo::DETENIDO;
+
+        sprintf(buffer, "3 Inicios de ciclo en los ultimos %ds", (int)(TIEMPO_ALARMA_DOS_CICLOS / 1000ul));
+        pantallaFalla(buffer);
+      }
+    }
+  }
+
 }
 
 void informacionSerial(int flotador) {
