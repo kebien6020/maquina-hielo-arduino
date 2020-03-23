@@ -2,15 +2,13 @@
 #include <stdlib.h>
 #include <EEPROM.h>
 #include <max6675.h>
+#include <ModbusMaster.h>
 
 #include "src/NexDualButton.h"
 #include "src/NexNumber.h"
 
 // Entradas
 constexpr int PIN_FLOTADOR = 2;
-constexpr int PIN_TERMOCUPLA_SCK = A0;
-constexpr int PIN_TERMOCUPLA_CS = A1;
-constexpr int PIN_TERMOCUPLA_D0 = A2;
 
 constexpr int PIN_FLT_TK_ALTO = 3;
 constexpr int PIN_FLT_TK_BAJO = 4;
@@ -23,6 +21,8 @@ constexpr int PIN_SOLENOIDE_TK_ALMACENAMIENTO = 7;
 constexpr int PIN_BOMBA_TK_ALMACENAMIENTO = 5;
 constexpr int PIN_LLENADO = 6;
 constexpr int PIN_MOTOR = A1;
+constexpr int PIN_DIRECCION_RS485_1 = 22;
+constexpr int PIN_DIRECCION_RS485_2 = 24;
 
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
@@ -144,9 +144,6 @@ void configDefrostCallback(void *);
 void configInicioCallback(void *);
 void configTLlenadoCallback(void *);
 
-// Sensor de temperatura
-MAX6675 termocupla(PIN_TERMOCUPLA_SCK, PIN_TERMOCUPLA_CS, PIN_TERMOCUPLA_D0);
-
 // Funciones de salida
 bool g_contactor = false;
 void contactor(bool state) { g_contactor = state; }
@@ -188,6 +185,24 @@ auto g_config_tiempo_llenado = 30;
 
 auto g_timestamp_solenoide_tk_on = 0ul;
 
+// Comunicacion Modbus
+ModbusMaster modbus;
+
+// Callbacks direccion 485 para libreria modbus
+void preTransmission()
+{
+  // Configurar 485 para enviar
+  digitalWrite(PIN_DIRECCION_RS485_1, HIGH);
+  digitalWrite(PIN_DIRECCION_RS485_2, HIGH);
+}
+
+void postTransmission()
+{
+  // Configurar 485 para recibir
+  digitalWrite(PIN_DIRECCION_RS485_1, LOW);
+  digitalWrite(PIN_DIRECCION_RS485_2, LOW);
+}
+
 void setup() {
   Serial.begin(115200);
   
@@ -202,6 +217,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);                     digitalWrite(LED_BUILTIN, LOW);
   pinMode(PIN_SOLENOIDE_TK_ALMACENAMIENTO, OUTPUT); solenoide_tk(false);
   pinMode(PIN_BOMBA_TK_ALMACENAMIENTO, OUTPUT);     bomba_tk(false);
+  pinMode(PIN_DIRECCION_RS485_1, OUTPUT);
+  pinMode(PIN_DIRECCION_RS485_2, OUTPUT);
 
   // Pantalla
   {
@@ -212,6 +229,16 @@ void setup() {
     recvRetCommandFinished();
     sendCommand("page 0");
     recvRetCommandFinished();
+  }
+
+  // Modbus RTU - RS485
+  {
+    Serial3.begin(9600);
+
+    modbus.begin(2, Serial3); // Stop bit 1, parity none
+    // Callbacks para mover los pines de direccion de RS485
+    modbus.preTransmission(preTransmission);
+    modbus.postTransmission(postTransmission);
   }
 
   // Eventos
@@ -711,16 +738,50 @@ void inicializarContadores() {
   }
 }
 
-auto g_timestamp_ultima_lectura_termocupla = 0ul;
+template<typename T, int SIZE, typename A>
+class Average {
+  T data[SIZE];
+  T* current;
+public:
+  Average() : current(data) {}
+  
+  void add_val(T val)
+  {
+    *current = val;
+    ++current;
+    if (current >= (data + SIZE)) current = data;
+  }
+
+  A get_val()
+  {
+    A sum = 0;
+    for (auto val : data) {
+      sum += val;
+    }
+    return sum / SIZE;
+  }
+};
+
+auto g_timestamp_ultima_lectura_temperatura = 0ul;
+
 void leerTemperatura() {
-  const auto tiempo_desde_lectura = ahora - g_timestamp_ultima_lectura_termocupla;
+  const auto tiempo_transcurrido = ahora - g_timestamp_ultima_lectura_temperatura;
 
-  if (tiempo_desde_lectura > 2000) {
-    const auto temp = termocupla.readCelsius();
-    if (!isnan(temp))
-      g_temperatura = temp;
+  if (tiempo_transcurrido >= 1000) {
+    g_timestamp_ultima_lectura_temperatura = ahora;
 
-    g_timestamp_ultima_lectura_termocupla = ahora;
+    const auto result = modbus.readInputRegisters(0x03E8, 1);
+
+    if (result == modbus.ku8MBSuccess) {
+      const auto value = modbus.getResponseBuffer(0);
+
+      const auto degreesTimesTen = static_cast<int16_t>(value);
+      g_temperatura = degreesTimesTen / 10.0;
+    } else {
+      Serial.print("Lectura no exitosa de la temperatura, codigo libreria modbus: ");
+      Serial.println(result, 16);
+    }
+
   }
 }
 
