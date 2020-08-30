@@ -852,7 +852,7 @@ void alarmas() {
 
     if (g_tiempo_ciclo > 0ul && g_tiempo_ciclo_prev > 0ul) {
       const auto sumatoria_tiempos_ciclo = g_tiempo_ciclo + g_tiempo_ciclo_prev;
-      if (sumatoria_tiempos_ciclo > TIEMPO_ALARMA_DOS_CICLOS) {
+      if (sumatoria_tiempos_ciclo < TIEMPO_ALARMA_DOS_CICLOS) {
         g_modo_siguiente = Modo::DETENIDO;
 
         sprintf(buffer, "3 Inicios de ciclo en los ultimos %ds", (int)(TIEMPO_ALARMA_DOS_CICLOS / 1000ul));
