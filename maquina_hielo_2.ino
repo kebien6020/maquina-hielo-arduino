@@ -475,7 +475,7 @@ void actualizarSalidas();
 void cambiosDeModo();
 void alarmas();
 
-auto flotador = false; // true -> lleno
+auto flotador = false; // true -> vacio
 auto flotador_antes = false;
 
 auto flotador_tk_alto = false; // true -> nivel por encima de high
@@ -555,21 +555,21 @@ void loop() {
     defrost(false);
     bomba(true);
 
-    if (flotador == HIGH && flotador_antes == LOW) { // menos de lleno y justo cambio
+    if (flotador && !flotador_antes) { // menos de lleno y justo cambio
       g_temp_crusero = ahora + (g_config_tiempo_llenado * 1000ul); // poner a correr tiempo
       if (MENSAJES_ADICIONALES) {
         Serial.println("Programando el llenado");
       }
     }
     
-    if (g_temp_crusero <= ahora && flotador == HIGH) {
+    if (g_temp_crusero <= ahora && flotador) {
       llenado(true);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
       }
     }
 
-    if (flotador == LOW) { // lleno
+    if (!flotador) { // lleno
       llenado(false);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Lleno, apagando llenado");
