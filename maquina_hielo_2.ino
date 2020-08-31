@@ -60,6 +60,8 @@ NexButton* todosReset[] = {&bReset0};
 auto bInicio = NexButton(0, 2, "b0");
 auto bProcesoActual = NexButton(0, 6, "b4");
 
+auto tCiclos = NexText(0, 0, "tCiclos");
+
 auto tTArranque = NexText(4, 3, "txtTArranque");
 auto tBombaArr = NexText(4, 8, "txtPump");
 auto tFanArr = NexText(4, 9, "txtFan");
@@ -98,6 +100,7 @@ auto bAguaC = NexDualButton(1, 5, "bAguaC");
 auto bLlenado = NexDualButton(1, 4, "bLlenado");
 auto bLlenadoC = NexDualButton(1, 6, "bLlenadoC");
 auto bDefrost = NexDualButton(1, 7, "bDefrost");
+auto bLlenadoTk = NexButton(1, 8, "bLlenadoTk");
 
 auto slPreDefrost = NexSlider(2, 3, "slPreDefrost");
 auto nPreDefrost = NexNumber(2, 4, "nPreDefrost");
@@ -122,6 +125,7 @@ NexTouch* nex_listen_list[] = {
   &bAguaC,
   &bLlenado,
   &bLlenadoC,
+  &bLlenadoTk,
   &bProcesoActual,
   &bDefrost,
   &slPreDefrost,
@@ -139,6 +143,7 @@ void modoDefrostCallback(void *);
 void manualLlenadoCallback(void *);
 void manualBombaControlCallback(void *);
 void manualLlenadoControlCallback(void *);
+void manualLlenadoTkCallback(void *);
 void configPreDefrostCallback(void *);
 void configDefrostCallback(void *);
 void configInicioCallback(void *);
@@ -250,6 +255,7 @@ void setup() {
   bAguaC.attachPop(manualBombaControlCallback);
   bLlenado.attachPop(manualLlenadoCallback);
   bLlenadoC.attachPop(manualLlenadoControlCallback);
+  bLlenadoTk.attachPop(manualLlenadoTkCallback);
   bProcesoActual.attachPop(irProcesoActualCallback);
   bDefrost.attachPop(modoDefrostCallback);
 
@@ -314,6 +320,8 @@ auto g_llenado_control_manual = false;
 auto g_llenado_manual = false;
 
 auto g_temperatura = 25.0;
+
+auto g_contador_ciclos = 0;
 
 auto ahora = 0ul;
 
@@ -483,6 +491,21 @@ auto flotador_tk_alto_antes = false;
 auto flotador_tk_bajo = false; // true -> nivel por encima de low
 auto flotador_tk_bajo_antes = false;
 
+void eventoTkBajoNivel() {
+  solenoide_tk(true);
+  g_timestamp_solenoide_tk_on = ahora;
+}
+
+void manualLlenadoTkCallback(void *) {
+  Serial.println("Boton llenar tanque");
+  if (flotador_tk_alto) {
+    Serial.println("Ignorando llenado de tanque porque ya esta lleno");
+    return;
+  }
+
+  eventoTkBajoNivel();
+}
+
 void loop() {
   g_modo_antes = g_modo;
   g_modo = g_modo_siguiente;
@@ -509,8 +532,6 @@ void loop() {
     bomba(false);
     fan(false);
     llenado(false);
-    solenoide_tk(false);
-    bomba_tk(false);
   }
 
   if (g_modo == Modo::INICIO_CICLO || g_modo == Modo::ARRANQUE) {
@@ -619,11 +640,11 @@ void loop() {
     llenado(g_llenado_manual);
   }
 
-  alarmas();
-  actualizarSalidas();
   nexLoop(nex_listen_list);
   actualizarPantalla(flotador);
   informacionSerial(flotador);
+  alarmas();
+  actualizarSalidas();
 }
 
 /***************
@@ -653,6 +674,7 @@ void cambiosDeModo() {
     contactor(true);
     Serial.println("Programando tiempo modo inicio ciclo");
     g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
+    g_contador_ciclos++;
   }
 
   if (g_modo == Modo::DEFROST && g_modo_antes != g_modo) {
@@ -670,8 +692,7 @@ void logicaTanque() {
     flotador_tk_bajo == false;                    // cambió a off
   
   if (evento_bajo_nivel) {
-    solenoide_tk(true);
-    g_timestamp_solenoide_tk_on = ahora;
+    eventoTkBajoNivel();
   }
 
   const auto tiempo_solenoide_encendida = ahora - g_timestamp_solenoide_tk_on;
@@ -809,10 +830,6 @@ void alarmas() {
     g_timestamp_inicio_llenado_tk = ahora;
   }
 
-  if (g_modo == Modo::INICIO_CICLO && g_modo != g_modo_antes) {
-    g_timestamp_inicio_ciclo = ahora;
-  }
-
   // Alarmas
   char buffer[64];
 
@@ -848,12 +865,23 @@ void alarmas() {
       const auto duracion_ciclo = ahora - g_timestamp_inicio_ciclo;
       g_tiempo_ciclo_prev = g_tiempo_ciclo;
       g_tiempo_ciclo = duracion_ciclo;
+
+      if (MENSAJES_ADICIONALES) {
+        sprintf(buffer, "Tiempo ciclo previo: %ds", g_tiempo_ciclo_prev / 1000);
+        Serial.println(buffer);
+        sprintf(buffer, "Tiempo ciclo: %ds", g_tiempo_ciclo / 1000);
+        Serial.println(buffer);
+      }
     }
+
+    g_timestamp_inicio_ciclo = ahora;
 
     if (g_tiempo_ciclo > 0ul && g_tiempo_ciclo_prev > 0ul) {
       const auto sumatoria_tiempos_ciclo = g_tiempo_ciclo + g_tiempo_ciclo_prev;
       if (sumatoria_tiempos_ciclo < TIEMPO_ALARMA_DOS_CICLOS) {
         g_modo_siguiente = Modo::DETENIDO;
+        g_tiempo_ciclo = 0ul;
+        g_tiempo_ciclo_prev = 0ul;
 
         sprintf(buffer, "3 Inicios de ciclo en los ultimos %ds", (int)(TIEMPO_ALARMA_DOS_CICLOS / 1000ul));
         pantallaFalla(buffer);
@@ -1001,6 +1029,9 @@ void actualizarPantalla(bool flotador) {
       dtostrf(g_temperatura, 6, 1, buffer);
       tTemperaturaConfig.setText(buffer);
     }
+
+    itoa(g_contador_ciclos, buffer, 10);
+    tCiclos.setText(buffer);
 
     if (pagina == 1) { // manual control
 
