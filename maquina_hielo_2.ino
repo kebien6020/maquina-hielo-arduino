@@ -59,6 +59,7 @@ NexButton* todosReset[] = {&bReset0};
 
 auto bInicio = NexButton(0, 2, "b0");
 auto bProcesoActual = NexButton(0, 6, "b4");
+auto bProcesoActual2 = NexButton(9, 5, "b4");
 
 auto tCiclos = NexText(0, 0, "tCiclos");
 
@@ -100,7 +101,6 @@ auto bAguaC = NexDualButton(1, 5, "bAguaC");
 auto bLlenado = NexDualButton(1, 4, "bLlenado");
 auto bLlenadoC = NexDualButton(1, 6, "bLlenadoC");
 auto bDefrost = NexDualButton(1, 7, "bDefrost");
-auto bLlenadoTk = NexButton(1, 8, "bLlenadoTk");
 
 auto slPreDefrost = NexSlider(2, 3, "slPreDefrost");
 auto nPreDefrost = NexNumber(2, 4, "nPreDefrost");
@@ -115,6 +115,10 @@ auto slTLlenado = NexSlider(2, 15, "slTLlenado");
 auto nTLlenado = NexNumber(2, 16, "nTLlenado");
 auto tTemperaturaConfig = NexText(2, 19, "tTemp");
 
+auto tCTkStatus = NexText(9, 3, "tCTkStatus");
+auto bLlenadoTk = NexButton(9, 1, "bLlenadoTk");
+auto bDetenerTk = NexButton(9, 2, "bDetenerTk");
+
 auto tFalla = NexText(8, 2, "tFalla");
 
 // Componentes que generan eventos
@@ -127,11 +131,13 @@ NexTouch* nex_listen_list[] = {
   &bLlenadoC,
   &bLlenadoTk,
   &bProcesoActual,
+  &bProcesoActual2,
   &bDefrost,
   &slPreDefrost,
   &slDefrost,
   &slInicio,
   &slTLlenado,
+  &bDetenerTk,
   NULL
 };
 
@@ -144,6 +150,7 @@ void manualLlenadoCallback(void *);
 void manualBombaControlCallback(void *);
 void manualLlenadoControlCallback(void *);
 void manualLlenadoTkCallback(void *);
+void manualDetenerTkCallback(void *);
 void configPreDefrostCallback(void *);
 void configDefrostCallback(void *);
 void configInicioCallback(void *);
@@ -255,9 +262,11 @@ void setup() {
   bAguaC.attachPop(manualBombaControlCallback);
   bLlenado.attachPop(manualLlenadoCallback);
   bLlenadoC.attachPop(manualLlenadoControlCallback);
-  bLlenadoTk.attachPop(manualLlenadoTkCallback);
   bProcesoActual.attachPop(irProcesoActualCallback);
+  bProcesoActual2.attachPop(irProcesoActualCallback);
   bDefrost.attachPop(modoDefrostCallback);
+  bLlenadoTk.attachPop(manualLlenadoTkCallback);
+  bDetenerTk.attachPop(manualDetenerTkCallback);
 
   slPreDefrost.attachPop(configPreDefrostCallback);
   slDefrost.attachPop(configDefrostCallback);
@@ -494,6 +503,16 @@ auto flotador_tk_bajo_antes = false;
 void eventoTkBajoNivel() {
   solenoide_tk(true);
   g_timestamp_solenoide_tk_on = ahora;
+
+  sendCommand("page 9");
+  recvRetCommandFinished();
+}
+
+void eventoTkAltoNivel() {
+  bomba_tk(false);
+  solenoide_tk(false);
+
+  irProcesoActualCallback(nullptr);
 }
 
 void manualLlenadoTkCallback(void *) {
@@ -504,6 +523,12 @@ void manualLlenadoTkCallback(void *) {
   }
 
   eventoTkBajoNivel();
+}
+
+void manualDetenerTkCallback(void *) {
+  Serial.println("Boton detener tanque");
+  
+  eventoTkAltoNivel();
 }
 
 void loop() {
@@ -709,8 +734,7 @@ void logicaTanque() {
     flotador_tk_alto == true;                     // cambió a on
 
   if (evento_alto_nivel) {
-    bomba_tk(false);
-    solenoide_tk(false);
+    eventoTkAltoNivel();
   }
 }
 
@@ -1054,6 +1078,19 @@ void actualizarPantalla(bool flotador) {
       bLlenadoC.setVal(g_llenado_control_manual ? 1 : 0);
       bLlenadoC.setText(g_llenado_control_manual ? "Manual" : "Auto");
 
+    }
+
+    if (pagina == 9) { // control tk
+      if (bomba_tk()) {
+        tCTkStatus.setText("Llenando...");
+        tCTkStatus.Set_background_color_bco(2024); // Green
+      } else if (solenoide_tk()) {
+        tCTkStatus.setText("Solenoide");
+        tCTkStatus.Set_background_color_bco(2024); // Green
+      } else {
+        tCTkStatus.setText("Detenido");
+        tCTkStatus.Set_background_color_bco(65535); // White
+      } 
     }
 
     if (g_modo == Modo::ARRANQUE) {
