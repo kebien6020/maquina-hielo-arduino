@@ -120,6 +120,7 @@ auto bLlenadoTk = NexButton(9, 1, "bLlenadoTk");
 auto bDetenerTk = NexButton(9, 2, "bDetenerTk");
 
 auto tFalla = NexText(8, 2, "tFalla");
+auto bSalirFalla = NexButton(8, 3, "b2");
 
 // Componentes que generan eventos
 NexTouch* nex_listen_list[] = {
@@ -138,6 +139,7 @@ NexTouch* nex_listen_list[] = {
   &slInicio,
   &slTLlenado,
   &bDetenerTk,
+  &bSalirFalla,
   NULL
 };
 
@@ -155,6 +157,7 @@ void configPreDefrostCallback(void *);
 void configDefrostCallback(void *);
 void configInicioCallback(void *);
 void configTLlenadoCallback(void *);
+void salirFallaCallback(void *);
 
 // Funciones de salida
 bool g_contactor = false;
@@ -267,6 +270,7 @@ void setup() {
   bDefrost.attachPop(modoDefrostCallback);
   bLlenadoTk.attachPop(manualLlenadoTkCallback);
   bDetenerTk.attachPop(manualDetenerTkCallback);
+  bSalirFalla.attachPop(salirFallaCallback);
 
   slPreDefrost.attachPop(configPreDefrostCallback);
   slDefrost.attachPop(configDefrostCallback);
@@ -331,6 +335,8 @@ auto g_llenado_manual = false;
 auto g_temperatura = 25.0;
 
 auto g_contador_ciclos = 0;
+
+auto g_falla_activa = false;
 
 auto ahora = 0ul;
 
@@ -482,6 +488,11 @@ void configTLlenadoCallback(void *) {
   g_config_tiempo_llenado = tiempo;
 }
 
+void salirFallaCallback(void *) {
+  Serial.println("Limpiando fallas");
+  g_falla_activa = false;
+}
+
 void patronParpadeoLed();
 void inicializarContadores();
 void muestraControlFrio();
@@ -501,6 +512,16 @@ auto flotador_tk_bajo = false; // true -> nivel por encima de low
 auto flotador_tk_bajo_antes = false;
 
 void eventoTkBajoNivel() {
+  Serial.println("Evento bajo nivel");
+  if (g_falla_activa) {
+    Serial.println("Ignorando evento bajo nivel por falla activa");
+    return;
+  }
+
+  if (solenoide_tk()) {
+    Serial.println("Ignorando evento bajo nivel porque ya inicio el llenado");
+    return;
+  }
   solenoide_tk(true);
   g_timestamp_solenoide_tk_on = ahora;
 
@@ -509,6 +530,7 @@ void eventoTkBajoNivel() {
 }
 
 void eventoTkAltoNivel() {
+  Serial.println("Evento alto nivel");
   bomba_tk(false);
   solenoide_tk(false);
 
@@ -831,6 +853,7 @@ void leerTemperatura() {
 }
 
 void pantallaFalla(const char* mensaje) {
+  g_falla_activa = true;
   sendCommand("page 8"); // fallas
   recvRetCommandFinished();
 
