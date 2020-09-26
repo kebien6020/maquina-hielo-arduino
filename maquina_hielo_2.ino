@@ -6,6 +6,7 @@
 
 #include "src/NexDualButton.h"
 #include "src/NexNumber.h"
+#include "src/Time.h"
 
 // Entradas
 constexpr int PIN_FLOTADOR = 2;
@@ -40,7 +41,7 @@ constexpr auto TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO = 10000ul;
 
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
-constexpr auto MENSAJES_ADICIONALES = false;
+constexpr auto MENSAJES_ADICIONALES = true;
 
 // Direcciones EEPROM
 constexpr auto CONFIG_PRE_DEFROST_DIRECCION = 1;
@@ -103,16 +104,16 @@ auto bLlenadoC = NexDualButton(1, 6, "bLlenadoC");
 auto bDefrost = NexDualButton(1, 7, "bDefrost");
 
 auto slPreDefrost = NexSlider(2, 3, "slPreDefrost");
-auto nPreDefrost = NexNumber(2, 4, "nPreDefrost");
+auto nPreDefrost = NexNumberFix(2, 4, "nPreDefrost");
 
 auto slDefrost = NexSlider(2, 7, "slDefrost");
-auto nDefrost = NexNumber(2, 8, "nDefrost");
+auto nDefrost = NexNumberFix(2, 8, "nDefrost");
 
 auto slInicio = NexSlider(2, 11, "slInicio");
-auto nInicio = NexNumber(2, 12, "nInicio");
+auto nInicio = NexNumberFix(2, 12, "nInicio");
 
 auto slTLlenado = NexSlider(2, 15, "slTLlenado");
-auto nTLlenado = NexNumber(2, 16, "nTLlenado");
+auto nTLlenado = NexNumberFix(2, 16, "nTLlenado");
 auto tTemperaturaConfig = NexText(2, 19, "tTemp");
 
 auto tCTkStatus = NexText(9, 3, "tCTkStatus");
@@ -220,18 +221,27 @@ void postTransmission()
 
 void setup() {
   Serial.begin(115200);
+  delay(1500);
   
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
-  pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT);         contactor(false);
-  pinMode(PIN_LLENADO, OUTPUT);                     llenado(false);
-  pinMode(PIN_FAN, OUTPUT);                         fan(false);
-  pinMode(PIN_BOMBA, OUTPUT);                       bomba(false);
-  pinMode(PIN_DEFROST, OUTPUT);                     defrost(false);
-  pinMode(LED_BUILTIN, OUTPUT);                     digitalWrite(LED_BUILTIN, LOW);
-  pinMode(PIN_SOLENOIDE_TK_ALMACENAMIENTO, OUTPUT); solenoide_tk(false);
-  pinMode(PIN_BOMBA_TK_ALMACENAMIENTO, OUTPUT);     bomba_tk(false);
+  contactor(false);
+  llenado(false);
+  fan(false);
+  bomba(false);
+  defrost(false);
+  digitalWrite(LED_BUILTIN, LOW);
+  solenoide_tk(false);
+  bomba_tk(false);
+  pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT);
+  pinMode(PIN_LLENADO, OUTPUT);
+  pinMode(PIN_FAN, OUTPUT);
+  pinMode(PIN_BOMBA, OUTPUT);
+  pinMode(PIN_DEFROST, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(PIN_SOLENOIDE_TK_ALMACENAMIENTO, OUTPUT);
+  pinMode(PIN_BOMBA_TK_ALMACENAMIENTO, OUTPUT);
   pinMode(PIN_DIRECCION_RS485_1, OUTPUT);
   pinMode(PIN_DIRECCION_RS485_2, OUTPUT);
 
@@ -321,11 +331,11 @@ auto g_temp_debounce_inicio = 0ul;
 auto g_temp_bomba_inicio = 0ul;
 auto g_temp_serial = 0ul;
 auto g_temp_inicio_ciclo = 0ul;
-auto g_temp_crusero = 0ul;
 auto g_temp_final_ciclo = 0ul;
 auto g_temp_defrost = 0ul;
 auto g_temp_muestras_control_frio = 0ul;
 auto g_temp_contactor = 0ul;
+auto g_inicio_delay_llenado_crusero = kev::Timestamp{};
 
 auto g_bomba_control_manual = false;
 auto g_bomba_manual = false;
@@ -624,13 +634,15 @@ void loop() {
     bomba(true);
 
     if (flotador && !flotador_antes) { // menos de lleno y justo cambio
-      g_temp_crusero = ahora + (g_config_tiempo_llenado * 1000ul); // poner a correr tiempo
+      g_inicio_delay_llenado_crusero = ahora; // registrar inicio de llenado
       if (MENSAJES_ADICIONALES) {
         Serial.println("Programando el llenado");
       }
     }
+
+    auto time_elapsed_delay_llenado = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
     
-    if (g_temp_crusero <= ahora && flotador) {
+    if (flotador && time_elapsed_delay_llenado >= kev::Duration{g_config_tiempo_llenado * 1000}) {
       llenado(true);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
@@ -723,6 +735,13 @@ void cambiosDeModo() {
     g_temp_inicio_ciclo = ahora + TIEMPO_MODO_INICIO_CICLO;
     g_contador_ciclos++;
   }
+
+  // if (g_modo == Modo::CRUSERO && g_modo_antes != Modo::CRUSERO && flotador) {
+  //   g_inicio_delay_llenado_crusero = ahora; // poner a correr tiempo
+  //   if (MENSAJES_ADICIONALES) {
+  //     Serial.println("Programando el llenado");
+  //   }
+  // }
 
   if (g_modo == Modo::DEFROST && g_modo_antes != g_modo) {
     Serial.println("Programando tiempo defrost");
@@ -1026,10 +1045,9 @@ void informacionSerial(int flotador) {
     }
 
     if (g_modo == Modo::CRUSERO) {
-      if (g_temp_crusero >= ahora) {
-        Serial.print(" - T_ESPERA_LLENADO: ");
-        Serial.print((g_temp_crusero - ahora)/ 1000ul);
-      }
+      Serial.print(" - T_TRANSCURRIDO_LLENADO: ");
+      auto time_elapsed = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
+      Serial.print(time_elapsed.unsafeGetValue() / 1000l);
     }
 
     if (g_modo == Modo::FINAL_CICLO) {
@@ -1059,6 +1077,12 @@ void actualizarPantalla(bool flotador) {
     pagina_anterior = pagina;
     sendCommand("get dp");
     recvRetNumber(&pagina);
+
+    if (g_falla_activa && pagina != 8) {
+      sendCommand("page 8");
+      recvRetCommandFinished();
+      return;
+    }
 
     if (pagina == 2 && pagina != pagina_anterior) { // configuraciones
       slPreDefrost.setValue(g_config_temperatura_pre_defrost + CONFIG_PRE_DEFROST_OFFSET);
@@ -1142,8 +1166,11 @@ void actualizarPantalla(bool flotador) {
       dtostrf(g_temperatura, 6, 1, buffer);
       tTemperaturaCrusero.setText(buffer);
       
-      if (g_temp_crusero >= ahora) {
-        itoa((g_temp_crusero - ahora) / 1000ul, buffer, 10);
+      const auto end_delay_llenado = g_inicio_delay_llenado_crusero + kev::Duration{g_config_tiempo_llenado * 1000};
+      const auto remaining_delay_llenado = end_delay_llenado - kev::Timestamp{ahora};
+
+      if (remaining_delay_llenado >= 0) {
+        itoa(remaining_delay_llenado.unsafeGetValue() / 1000ul, buffer, 10);
         tTLlenadoCrusero.setText(buffer);
       } else {
         tTLlenadoCrusero.setText("N/A");

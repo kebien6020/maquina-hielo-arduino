@@ -1,12 +1,9 @@
-#ifndef __NEXNUMBER_H__
-#define __NEXNUMBER_H__
-
 #include <NexTouch.h>
 #include <NexHardware.h>
 
-class NexNumber : public NexTouch {
+class NexNumberFix : public NexTouch {
 public:
-    NexNumber(uint8_t pid, uint8_t cid, const char *name)
+    NexNumberFix(uint8_t pid, uint8_t cid, const char *name)
         :NexTouch(pid, cid, name)
     {
     }
@@ -24,5 +21,3 @@ public:
         return recvRetCommandFinished();
     }
 };
-
-#endif
