@@ -654,13 +654,15 @@ void loop() {
     const auto time_elapsed_delay_llenado = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
     const auto delay_finished = time_elapsed_delay_llenado >= delay_llenado;
 
-    if (flotador && timer_running && delay_finished) {
+    if (flotador && delay_finished) {
       llenado(true);
       g_inicio_delay_llenado_crusero = 0ul; // clear timer
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
       }
-    } else if (!flotador) { // lleno
+    }
+
+    if (!flotador) { // lleno
       llenado(false);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Lleno, apagando llenado");
