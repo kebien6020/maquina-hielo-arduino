@@ -222,7 +222,7 @@ void postTransmission()
 void setup() {
   Serial.begin(115200);
   delay(1500);
-  
+
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
@@ -247,7 +247,7 @@ void setup() {
 
   // Pantalla
   {
-    
+
     nexSerial.begin(115200);
     sendCommand("");
     sendCommand("bkcmd=1");
@@ -358,7 +358,7 @@ void resetCallback(void *) {
 void inicioCallback(void *) {
   Serial.println("Boton inicio");
   g_modo_siguiente = Modo::ARRANQUE;
-  
+
   sendCommand("page 4");
   recvRetCommandFinished();
 }
@@ -380,7 +380,7 @@ void manualBombaControlCallback(void *) {
 void manualLlenadoControlCallback(void *) {
   Serial.println("Cambio de modo manual para llenado");
   uint32_t llenadoC = -1;
-  
+
   sendCommand("bkcmd=0");
   recvRetCommandFinished();
   sendCommand("get bLlenadoC.val");
@@ -559,7 +559,7 @@ void manualLlenadoTkCallback(void *) {
 
 void manualDetenerTkCallback(void *) {
   Serial.println("Boton detener tanque");
-  
+
   eventoTkAltoNivel();
 }
 
@@ -574,7 +574,7 @@ void loop() {
   flotador_tk_alto = digitalRead(PIN_FLT_TK_ALTO) == HIGH;
   flotador_tk_bajo_antes = flotador_tk_bajo;
   flotador_tk_bajo = digitalRead(PIN_FLT_TK_BAJO) == HIGH;
-  
+
   ahora = millis();
 
   patronParpadeoLed();
@@ -633,23 +633,27 @@ void loop() {
     defrost(false);
     bomba(true);
 
-    if (flotador && !flotador_antes) { // menos de lleno y justo cambio
+    const auto flotador_falling = flotador && !flotador_antes;
+    const auto timer_running = bool{g_inicio_delay_llenado_crusero};
+
+    if (flotador_falling && !llenado() && !timer_running) {
       g_inicio_delay_llenado_crusero = ahora; // registrar inicio de llenado
       if (MENSAJES_ADICIONALES) {
         Serial.println("Programando el llenado");
       }
     }
 
-    auto time_elapsed_delay_llenado = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
-    
-    if (flotador && time_elapsed_delay_llenado >= kev::Duration{g_config_tiempo_llenado * 1000}) {
+    const auto delay_llenado = kev::Duration{g_config_tiempo_llenado * 1000};
+    const auto time_elapsed_delay_llenado = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
+    const auto delay_finished = time_elapsed_delay_llenado >= delay_llenado;
+
+    if (flotador && timer_running && delay_finished) {
       llenado(true);
+      g_inicio_delay_llenado_crusero = 0ul; // clear timer
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
       }
-    }
-
-    if (!flotador) { // lleno
+    } else if (!flotador) { // lleno
       llenado(false);
       if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
         Serial.println("Lleno, apagando llenado");
@@ -667,7 +671,7 @@ void loop() {
     llenado(false);
     fan(true);
     defrost(false);
-    
+
     if (g_temp_final_ciclo <= ahora) {
       g_modo_siguiente = Modo::DEFROST;
     }
@@ -682,7 +686,7 @@ void loop() {
     defrost(true);
     bomba(false);
     llenado(false);
-    
+
     if (g_temp_defrost <= ahora) {
       g_modo_siguiente = Modo::INICIO_CICLO;
     }
@@ -753,10 +757,10 @@ void cambiosDeModo() {
 }
 
 void logicaTanque() {
-  const auto evento_bajo_nivel = 
+  const auto evento_bajo_nivel =
     flotador_tk_bajo != flotador_tk_bajo_antes && // hubo cambio en sensor de nivel bajo, y...
     flotador_tk_bajo == false;                    // cambió a off
-  
+
   if (evento_bajo_nivel) {
     eventoTkBajoNivel();
   }
@@ -765,7 +769,7 @@ void logicaTanque() {
   const auto finalizo_temporizador_solenoide =
     solenoide_tk() && // la solenoide esta encendida, y...
     tiempo_solenoide_encendida >= TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO; // ya paso el tiempo de solenoide
-  
+
   if (finalizo_temporizador_solenoide) {
     bomba_tk(true);
   }
@@ -823,30 +827,6 @@ void inicializarContadores() {
     g_temp_contactor = ahora;
   }
 }
-
-template<typename T, int SIZE, typename A>
-class Average {
-  T data[SIZE];
-  T* current;
-public:
-  Average() : current(data) {}
-  
-  void add_val(T val)
-  {
-    *current = val;
-    ++current;
-    if (current >= (data + SIZE)) current = data;
-  }
-
-  A get_val()
-  {
-    A sum = 0;
-    for (auto val : data) {
-      sum += val;
-    }
-    return sum / SIZE;
-  }
-};
 
 auto g_timestamp_ultima_lectura_temperatura = 0ul;
 
@@ -1071,7 +1051,7 @@ uint32_t pagina = -1;
 void actualizarPantalla(bool flotador) {
 
   char buffer[32];
-  
+
   if (g_temp_serial <= ahora) {
 
     pagina_anterior = pagina;
@@ -1137,7 +1117,7 @@ void actualizarPantalla(bool flotador) {
       } else {
         tCTkStatus.setText("Detenido");
         tCTkStatus.Set_background_color_bco(65535); // White
-      } 
+      }
     }
 
     if (g_modo == Modo::ARRANQUE) {
@@ -1165,7 +1145,7 @@ void actualizarPantalla(bool flotador) {
       tFltCrusero.setText(flotador ? "VACIO": "LLENO");
       dtostrf(g_temperatura, 6, 1, buffer);
       tTemperaturaCrusero.setText(buffer);
-      
+
       const auto end_delay_llenado = g_inicio_delay_llenado_crusero + kev::Duration{g_config_tiempo_llenado * 1000};
       const auto remaining_delay_llenado = end_delay_llenado - kev::Timestamp{ahora};
 

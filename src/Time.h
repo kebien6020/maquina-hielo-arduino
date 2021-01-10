@@ -26,6 +26,8 @@ public:
     Timestamp(unsigned long value) : value{value} {}
     friend Duration operator-(const Timestamp&, const Timestamp&);
     friend Timestamp operator+(const Timestamp&, const Duration&);
+
+    explicit operator bool() { return value != 0ul; }
 };
 
 Duration operator-(const Timestamp& lhs, const Timestamp& rhs) {
