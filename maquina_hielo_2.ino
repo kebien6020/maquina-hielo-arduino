@@ -162,6 +162,8 @@ void configInicioCallback(void *);
 void configTLlenadoCallback(void *);
 void salirFallaCallback(void *);
 
+void actualizarSalidas();
+
 // Funciones de salida
 bool g_contactor = false;
 void contactor(bool state) { g_contactor = state; }
@@ -229,14 +231,17 @@ void setup() {
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
+
   contactor(false);
   llenado(false);
   fan(false);
   bomba(false);
   defrost(false);
-  digitalWrite(LED_BUILTIN, LOW);
   solenoide_tk(false);
   bomba_tk(false);
+  actualizarSalidas();
+  digitalWrite(LED_BUILTIN, LOW);
+
   pinMode(PIN_CONTACTOR_PRINCIPAL, OUTPUT);
   pinMode(PIN_LLENADO, OUTPUT);
   pinMode(PIN_FAN, OUTPUT);
@@ -512,7 +517,6 @@ void muestraControlFrio();
 void informacionSerial();
 void leerTemperatura();
 void actualizarPantalla(bool flotador);
-void actualizarSalidas();
 void cambiosDeModo();
 void alarmas();
 
