@@ -11,7 +11,7 @@ constexpr auto version = "1.0 (10/01/2021)";
 #include "src/Time.h"
 
 // Entradas
-constexpr int PIN_FLOTADOR = 2;
+constexpr int PIN_FLOTADOR = 12;
 
 constexpr int PIN_FLT_TK_ALTO = 3;
 constexpr int PIN_FLT_TK_BAJO = 4;
@@ -641,7 +641,7 @@ void loop() {
     bomba(true);
 
     const auto flotador_falling = flotador && !flotador_antes;
-    const auto timer_running = bool{g_inicio_delay_llenado_crusero};
+    const auto timer_running = bool(g_inicio_delay_llenado_crusero);
 
     if (flotador_falling && !llenado() && !timer_running) {
       g_inicio_delay_llenado_crusero = ahora; // registrar inicio de llenado
@@ -966,10 +966,15 @@ void informacionSerial(int flotador) {
     Serial.print(modoATexto(g_modo));
 
     Serial.print(" - Entradas: ");
-    if (flotador == HIGH) {
+    if (flotador) {
       Serial.print("FLT ");
     } else {
       Serial.print("    ");
+    }
+    if (flotador_antes) {
+      Serial.print("PFLT ");
+    } else {
+      Serial.print("     ");
     }
     if (flotador_tk_bajo) {
       Serial.print("FLB ");
@@ -1049,6 +1054,13 @@ void informacionSerial(int flotador) {
 
     Serial.println();
     g_temp_serial += 1000;
+  }
+
+  if (flotador_antes && !flotador) {
+    Serial.println("↑");
+  }
+  if (!flotador_antes && flotador) {
+    Serial.println("↓");
   }
 }
 
