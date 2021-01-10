@@ -1,3 +1,5 @@
+constexpr auto version = "1.0 (10/01/2021)";
+
 #include <Nextion.h>
 #include <stdlib.h>
 #include <EEPROM.h>
@@ -222,6 +224,7 @@ void postTransmission()
 void setup() {
   Serial.begin(115200);
   delay(1500);
+  Serial.print("Version: "); Serial.println(version);
 
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
