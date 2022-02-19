@@ -6,9 +6,9 @@ constexpr auto version = "1.0 (10/01/2021)";
 #include <max6675.h>
 #include <ModbusMaster.h>
 
-#include "src/NexDualButton.h"
-#include "src/NexNumber.h"
-#include "src/Time.h"
+#include "NexDualButton.h"
+#include "NexNumber.h"
+#include "Time.h"
 
 // Entradas
 constexpr int PIN_FLOTADOR = 12;
@@ -32,7 +32,6 @@ constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
-constexpr auto TIEMPO_MUESTRA_CONTROL_FRIO = 50ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
@@ -55,6 +54,8 @@ constexpr auto CONFIG_DEFROST_OFFSET = 20;
 constexpr auto CONFIG_INICIO_DIRECCION = 3;
 
 constexpr auto CONFIG_TLLENADO_DIRECCION = 4;
+
+constexpr auto EEPROM_IS_RUNNING = 5;
 
 // Componentes de la interfaz
 auto bReset0 = NexButton(0, 4, "b2");
@@ -163,6 +164,10 @@ void configTLlenadoCallback(void *);
 void salirFallaCallback(void *);
 
 void actualizarSalidas();
+
+void inicio();
+void inicioAutomatico();
+auto readEepromRunning() -> bool;
 
 // Funciones de salida
 bool g_contactor = false;
@@ -308,6 +313,13 @@ void setup() {
     g_timestamp_solenoide_tk_on = millis();
     solenoide_tk(true);
   }
+
+  auto const was_running = readEepromRunning();
+
+  if (was_running) {
+    Serial.println("Detected forced turn off. Starting process");
+    inicioAutomatico();
+  }
 }
 
 enum class Modo {
@@ -317,9 +329,9 @@ enum class Modo {
   CRUSERO,
   FINAL_CICLO,
   DEFROST,
+  ESPERA_INICIO_AUTOMATICO,
 };
 
-using Modo = Modo; // Blame Arduino IDE, https://arduino.stackexchange.com/questions/28133/cant-use-enum-as-function-argument
 const char* modoATexto(Modo m) {
   switch (m) {
     case Modo::DETENIDO:        return "DETENIDO    ";
@@ -328,6 +340,7 @@ const char* modoATexto(Modo m) {
     case Modo::CRUSERO:         return "CRUSERO     ";
     case Modo::FINAL_CICLO:     return "FINAL_CICLO ";
     case Modo::DEFROST:         return "DEFROST     ";
+    case Modo::ESPERA_INICIO_AUTOMATICO: return "ESPERA_INICIO_AUTOMATICO";
   }
   return                               "DESCONOCIDO ";
 }
@@ -363,12 +376,20 @@ void resetCallback(void *) {
   g_modo_siguiente = Modo::DETENIDO;
 }
 
-void inicioCallback(void *) {
-  Serial.println("Boton inicio");
+void inicioAutomatico() {
+  g_modo_siguiente = Modo::ESPERA_INICIO_AUTOMATICO;
+}
+
+void inicio() {
   g_modo_siguiente = Modo::ARRANQUE;
 
   sendCommand("page 4");
   recvRetCommandFinished();
+}
+
+void inicioCallback(void *) {
+  Serial.println("Boton inicio");
+  inicio();
 }
 
 void manualBombaControlCallback(void *) {
@@ -514,11 +535,13 @@ void salirFallaCallback(void *) {
 void patronParpadeoLed();
 void inicializarContadores();
 void muestraControlFrio();
-void informacionSerial();
 void leerTemperatura();
 void actualizarPantalla(bool flotador);
 void cambiosDeModo();
 void alarmas();
+void logicaTanque();
+void setEepromRunning(bool state);
+void informacionSerial(int flotador);
 
 auto flotador = false; // true -> vacio
 auto flotador_antes = false;
@@ -570,6 +593,11 @@ void manualDetenerTkCallback(void *) {
   eventoTkAltoNivel();
 }
 
+auto g_timestamp_inicio_automatico = kev::Timestamp{};
+auto const TIEMPO_ESPERA_INICIO_AUTOMATICO = kev::Duration{20ul * 60ul * 1000ul};
+
+void checkSerialUi(HardwareSerial&);
+
 void loop() {
   g_modo_antes = g_modo;
   g_modo = g_modo_siguiente;
@@ -589,6 +617,7 @@ void loop() {
   leerTemperatura();
   cambiosDeModo();
   logicaTanque();
+  checkSerialUi(Serial);
 
   if (g_modo == Modo::DETENIDO) {
     contactor(false);
@@ -596,6 +625,13 @@ void loop() {
     bomba(false);
     fan(false);
     llenado(false);
+  }
+
+  if (g_modo == Modo::ESPERA_INICIO_AUTOMATICO) {
+    auto const elapsed = ahora - g_timestamp_inicio_automatico;
+    if (elapsed > TIEMPO_ESPERA_INICIO_AUTOMATICO) {
+      g_modo_siguiente = Modo::ARRANQUE;
+    }
   }
 
   if (g_modo == Modo::INICIO_CICLO || g_modo == Modo::ARRANQUE) {
@@ -763,6 +799,29 @@ void cambiosDeModo() {
     g_bomba_control_manual = false;
     g_llenado_control_manual = false;
   }
+
+  if (g_modo == Modo::ESPERA_INICIO_AUTOMATICO && g_modo_antes != g_modo) {
+    Serial.println("Programando espera inicio automatico");
+    g_timestamp_inicio_automatico = ahora;
+  }
+
+  if (g_modo != Modo::DETENIDO && g_modo_antes == Modo::DETENIDO) {
+    Serial.println("Saving in EEPROM: running true");
+    setEepromRunning(true);
+  }
+
+  if (g_modo == Modo::DETENIDO && g_modo_antes != Modo::DETENIDO) {
+    Serial.println("Saving in EEPROM: running false");
+    setEepromRunning(false);
+  }
+}
+
+void setEepromRunning(bool state) {
+  EEPROM.write(EEPROM_IS_RUNNING, static_cast<uint8_t>(state));
+}
+
+auto readEepromRunning() -> bool {
+  return static_cast<bool>(EEPROM.read(EEPROM_IS_RUNNING));
 }
 
 void logicaTanque() {
@@ -922,9 +981,9 @@ void alarmas() {
       g_tiempo_ciclo = duracion_ciclo;
 
       if (MENSAJES_ADICIONALES) {
-        sprintf(buffer, "Tiempo ciclo previo: %ds", g_tiempo_ciclo_prev / 1000);
+        sprintf(buffer, "Tiempo ciclo previo: %lus", g_tiempo_ciclo_prev / 1000);
         Serial.println(buffer);
-        sprintf(buffer, "Tiempo ciclo: %ds", g_tiempo_ciclo / 1000);
+        sprintf(buffer, "Tiempo ciclo: %lus", g_tiempo_ciclo / 1000);
         Serial.println(buffer);
       }
     }
@@ -1054,6 +1113,13 @@ void informacionSerial(int flotador) {
       Serial.print((g_temp_defrost - ahora)/ 1000ul);
     }
 
+    if (g_modo == Modo::ESPERA_INICIO_AUTOMATICO) {
+      Serial.print(" - T_INICIO_AUTOMATICO: ");
+      Serial.print((ahora - g_timestamp_inicio_automatico).unsafeGetValue() / 1000ul);
+      Serial.print(" / ");
+      Serial.print(TIEMPO_ESPERA_INICIO_AUTOMATICO.unsafeGetValue() / 1000ul);
+    }
+
     Serial.println();
     g_temp_serial += 1000;
   }
@@ -1066,7 +1132,7 @@ void informacionSerial(int flotador) {
   }
 }
 
-auto pagina_anterior = 0;
+uint32_t pagina_anterior = 0;
 uint32_t pagina = -1;
 
 void actualizarPantalla(bool flotador) {
@@ -1209,6 +1275,11 @@ void actualizarPantalla(bool flotador) {
     }
   }
 
+  if (g_modo == Modo::ARRANQUE && g_modo_antes != Modo::ARRANQUE) {
+    sendCommand("page 4");
+    recvRetCommandFinished();
+  }
+
   if (g_modo == Modo::INICIO_CICLO && g_modo_antes != Modo::INICIO_CICLO) {
     sendCommand("page 5");
     recvRetCommandFinished();
@@ -1227,5 +1298,24 @@ void actualizarPantalla(bool flotador) {
   if (g_modo == Modo::DEFROST && g_modo_antes != Modo::DEFROST) {
     sendCommand("page 7");
     recvRetCommandFinished();
+  }
+}
+
+void processSerialCmd(String const& cmd) {
+  if (cmd == "start") {
+    g_modo_siguiente = Modo::ARRANQUE;
+  }
+  if (cmd == "stop") {
+    g_modo_siguiente = Modo::DETENIDO;
+  }
+}
+
+void checkSerialUi(HardwareSerial& serial) {
+  if (serial.available()) {
+    auto cmd = serial.readStringUntil('\n');
+    Serial.print("[serial] cmd=");
+    Serial.print(cmd);
+
+    processSerialCmd(cmd);
   }
 }
