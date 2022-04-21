@@ -35,7 +35,7 @@ constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
-constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 10ul * 60ul * 1000ul;
+constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 3ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ALARMA_DOS_CICLOS = 20ul * 60ul * 1000ul;
 
 constexpr auto TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO = 10000ul;
