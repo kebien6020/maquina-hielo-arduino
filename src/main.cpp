@@ -950,15 +950,17 @@ void alarmas() {
   // Alarma tiempo llenado
   auto tiempo_llenando = ahora - g_timestamp_inicio_llenado;
   if (llenado() && tiempo_llenando > TIEMPO_ALARMA_LLENADO) {
-    g_modo_siguiente = Modo::DETENIDO;
+    g_modo_siguiente = Modo::INICIO_CICLO;
 
     sprintf(buffer, "Tiempo de llenado super\xF3 %ds", (int)(TIEMPO_ALARMA_LLENADO / 1000ul));
-    pantallaFalla(buffer);
+    Serial.println(buffer);
+    // pantallaFalla(buffer);
   }
 
   // Alarma sensor bajo dañado
   if (!flotador_tk_bajo && flotador_tk_alto) {
-    pantallaFalla("Falla en sensor de nivel bajo");
+    // pantallaFalla("Falla en sensor de nivel bajo");
+    Serial.print("Falla en sensor de nivel bajo");
   }
 
   // Alarma tiempo llenado tk almacenamiento
