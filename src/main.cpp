@@ -562,6 +562,10 @@ void eventoTkBajoNivel() {
     Serial.println("Ignorando evento bajo nivel porque ya inicio el llenado");
     return;
   }
+  if (flotador_tk_alto) {
+    Serial.println("Ignorando evento bajo nivel porque ya esta lleno");
+    return;
+  }
   solenoide_tk(true);
   g_timestamp_solenoide_tk_on = ahora;
 
