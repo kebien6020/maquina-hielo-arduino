@@ -18,6 +18,14 @@ inline constexpr bool operator> (const Duration& lhs, const Duration& rhs){retur
 inline constexpr bool operator<=(const Duration& lhs, const Duration& rhs){return !operator> (lhs,rhs);}
 inline constexpr bool operator>=(const Duration& lhs, const Duration& rhs){return !operator< (lhs,rhs);}
 
+namespace literals {
+
+inline constexpr auto operator""_ms(unsigned long long t) -> Duration { return Duration{static_cast<long>(t)}; }
+inline constexpr auto operator""_s(unsigned long long t) -> Duration { return Duration{static_cast<long>(t * 1000ul)}; }
+inline constexpr auto operator""_min(unsigned long long t) -> Duration { return Duration{static_cast<long>(t * 60ul * 1000ul)}; }
+
+} // namespace literals
+
 
 class Timestamp {
     unsigned long value = 0;

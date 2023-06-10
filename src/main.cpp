@@ -1,4 +1,4 @@
-constexpr auto version = "1.0 (10/01/2021)";
+constexpr auto version = "1.1 (09/Jun/2023)";
 
 #include <Nextion.h>
 #include <stdlib.h>
@@ -9,6 +9,8 @@ constexpr auto version = "1.0 (10/01/2021)";
 #include "NexDualButton.h"
 #include "NexNumber.h"
 #include "Time.h"
+
+using namespace kev::literals;
 
 // Entradas
 constexpr int PIN_FLOTADOR = 12;
@@ -33,6 +35,7 @@ constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 8ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
+constexpr auto TIEMPO_MODO_CRUZERO = 35_min;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 3ul * 60ul * 1000ul;
@@ -372,6 +375,7 @@ auto g_temp_defrost = 0ul;
 auto g_temp_muestras_control_frio = 0ul;
 auto g_temp_contactor = 0ul;
 auto g_inicio_delay_llenado_crusero = kev::Timestamp{};
+auto g_temp_inicio_cruzero = kev::Timestamp{};
 
 auto g_bomba_control_manual = false;
 auto g_bomba_manual = false;
@@ -729,6 +733,12 @@ void loop() {
       g_modo_siguiente = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
     }
+
+    auto const tiempo_transcurrido = ahora - g_temp_inicio_cruzero;
+    if (tiempo_transcurrido > TIEMPO_MODO_CRUZERO) {
+      g_modo_siguiente = Modo::FINAL_CICLO;
+      g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
+    }
   }
 
   if (g_modo == Modo::FINAL_CICLO) {
@@ -811,6 +821,11 @@ void cambiosDeModo() {
   //     Serial.println("Programando el llenado");
   //   }
   // }
+
+  if (g_modo == Modo::CRUSERO && g_modo_antes != g_modo) {
+    Serial.println("Transision a cruzero, guardando tiempo de inicio");
+    g_temp_inicio_cruzero = ahora;
+  }
 
   if (g_modo == Modo::DEFROST && g_modo_antes != g_modo) {
     Serial.println("Programando tiempo defrost");
@@ -1166,7 +1181,15 @@ void informacionSerial(int flotador) {
     if (g_modo == Modo::CRUSERO && g_inicio_delay_llenado_crusero) {
       Serial.print(" - T_TRANSCURRIDO_LLENADO: ");
       auto time_elapsed = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
-      Serial.print(time_elapsed.unsafeGetValue() / 1000l);
+      Serial.print(time_elapsed.unsafeGetValue() / 1000ul);
+    }
+
+    if (g_modo == Modo::CRUSERO) {
+      Serial.print(" - T_CRUZERO: ");
+      auto elapsed = ahora - g_temp_inicio_cruzero;
+      Serial.print(elapsed.unsafeGetValue() / 1000ul);
+      Serial.print("/");
+      Serial.print(TIEMPO_MODO_CRUZERO.unsafeGetValue() / 1000ul);
     }
 
     if (g_modo == Modo::FINAL_CICLO) {

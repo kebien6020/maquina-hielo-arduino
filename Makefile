@@ -1,5 +1,5 @@
 VERBOSE := $(V)
-DEVICE=/dev/ttyACM1
+DEVICE=/dev/ttyACM0
 
 upload:
 	platformio run --target upload --upload-port $(DEVICE) $(VERBOSE)
