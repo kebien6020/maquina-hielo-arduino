@@ -31,7 +31,7 @@ constexpr int PIN_DIRECCION_RS485_2 = 24;
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
-constexpr auto TIEMPO_DEFROST = 6ul * 60ul * 1000ul + 20ul * 1000ul;
+constexpr auto TIEMPO_DEFROST = 8ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
@@ -39,6 +39,8 @@ constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 3ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ALARMA_DOS_CICLOS = 20ul * 60ul * 1000ul;
 
 constexpr auto TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO = 10000ul;
+
+constexpr auto TIEMPO_DEBOUNCE_SENSORES_TK = kev::Duration{1000ul};
 
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
@@ -232,6 +234,19 @@ void setup() {
   Serial.begin(115200);
   delay(1500);
   Serial.print("Version: "); Serial.println(version);
+
+  // {
+  //   Serial.println("Sobreescribiendo T pre defrost");
+  //   const auto temp = static_cast<int8_t>(-9);
+  //   EEPROM.write(CONFIG_PRE_DEFROST_DIRECCION, static_cast<uint8_t>(temp));
+  // }
+
+  // {
+  //   Serial.println("Sobreescribiendo T defrost");
+  //   const auto temp = static_cast<int8_t>(-12);
+  //   EEPROM.write(CONFIG_DEFROST_DIRECCION, static_cast<uint8_t>(temp));
+  // }
+
 
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
@@ -562,6 +577,7 @@ void eventoTkBajoNivel() {
     Serial.println("Ignorando evento bajo nivel porque ya inicio el llenado");
     return;
   }
+
   if (flotador_tk_alto) {
     Serial.println("Ignorando evento bajo nivel porque ya esta lleno");
     return;
@@ -695,16 +711,16 @@ void loop() {
     const auto delay_finished = time_elapsed_delay_llenado >= delay_llenado;
 
     if (flotador && delay_finished) {
-      llenado(true);
-      g_inicio_delay_llenado_crusero = 0ul; // clear timer
-      if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
+      if (MENSAJES_ADICIONALES && g_inicio_delay_llenado_crusero) {
         Serial.println("Finalizado tiempo de espera para llenado, llenando");
       }
+      llenado(true);
+      g_inicio_delay_llenado_crusero = 0ul; // clear timer
     }
 
     if (!flotador) { // lleno
       llenado(false);
-      if (MENSAJES_ADICIONALES && g_temp_serial <= ahora) {
+      if (MENSAJES_ADICIONALES && flotador_antes) {
         Serial.println("Lleno, apagando llenado");
       }
     }
@@ -829,11 +845,28 @@ auto readEepromRunning() -> bool {
 }
 
 void logicaTanque() {
-  const auto evento_bajo_nivel =
-    flotador_tk_bajo != flotador_tk_bajo_antes && // hubo cambio en sensor de nivel bajo, y...
-    flotador_tk_bajo == false;                    // cambió a off
+  // Debounce
+  static auto low_level_debounce_timer = kev::Timestamp{};
+  static auto low_level_state_prev = false;
+  static auto low_level_state = false;
+  auto const low_level_reading = flotador_tk_bajo;
+  if (low_level_reading != low_level_state_prev) {
+    low_level_debounce_timer = ahora;
+  }
+  auto const low_level_elapsed = kev::Timestamp{ahora} - low_level_debounce_timer;
+  auto const low_level_is_stable = low_level_elapsed > TIEMPO_DEBOUNCE_SENSORES_TK;
+  auto const low_level_changed = low_level_reading != low_level_state;
+  if (low_level_is_stable && low_level_changed) {
+    low_level_state = low_level_reading;
+  }
+  low_level_state_prev = low_level_reading;
 
-  if (evento_bajo_nivel) {
+  auto const low_level_event =
+    low_level_is_stable &&
+    low_level_changed &&
+    low_level_state == false;
+
+  if (low_level_event) {
     eventoTkBajoNivel();
   }
 
@@ -846,12 +879,35 @@ void logicaTanque() {
     bomba_tk(true);
   }
 
-  const auto evento_alto_nivel =
-    flotador_tk_alto != flotador_tk_alto_antes && // hubo cambio en el sensor de nivel alto, y...
-    flotador_tk_alto == true;                     // cambió a on
+  // Debounce
+  static auto high_level_debounce_timer = kev::Timestamp{};
+  static auto high_level_state_prev = false;
+  static auto high_level_state = false;
+  auto const high_level_reading = flotador_tk_alto;
+  if (high_level_reading != high_level_state_prev) {
+    high_level_debounce_timer = ahora;
+  }
+  auto const high_level_elapsed = kev::Timestamp{ahora} - high_level_debounce_timer;
+  auto const high_level_is_stable = high_level_elapsed > TIEMPO_DEBOUNCE_SENSORES_TK;
+  auto const high_level_changed = high_level_reading != high_level_state;
+  if (high_level_is_stable && high_level_changed) {
+    high_level_state = high_level_reading;
+  }
+  high_level_state_prev = high_level_reading;
 
-  if (evento_alto_nivel) {
+  auto const high_level_event =
+    high_level_is_stable &&
+    high_level_changed &&
+    high_level_state == true;
+
+  if (high_level_event) {
     eventoTkAltoNivel();
+  }
+
+  if (high_level_state && bomba_tk()) {
+    Serial.println("Forzando apagado de bomba por nivel alto");
+    solenoide_tk(false);
+    bomba_tk(false);
   }
 }
 
@@ -970,6 +1026,7 @@ void alarmas() {
   // Alarma tiempo llenado tk almacenamiento
   auto tiempo_llenando_tk = ahora - g_timestamp_inicio_llenado_tk;
   if (bomba_tk() && tiempo_llenando_tk > TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO) {
+    Serial.println("Error tiempo llenado tk");
     g_modo_siguiente = Modo::DETENIDO;
     solenoide_tk(false);
     bomba_tk(false);
@@ -1031,6 +1088,9 @@ void informacionSerial(int flotador) {
 
     Serial.print("Modo: ");
     Serial.print(modoATexto(g_modo));
+
+    Serial.print(" - Ciclo: ");
+    Serial.print(g_contador_ciclos);
 
     Serial.print(" - Entradas: ");
     if (flotador) {
@@ -1103,7 +1163,7 @@ void informacionSerial(int flotador) {
       Serial.print((g_temp_debounce_inicio - ahora)/ 1000ul);
     }
 
-    if (g_modo == Modo::CRUSERO) {
+    if (g_modo == Modo::CRUSERO && g_inicio_delay_llenado_crusero) {
       Serial.print(" - T_TRANSCURRIDO_LLENADO: ");
       auto time_elapsed = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
       Serial.print(time_elapsed.unsafeGetValue() / 1000l);
@@ -1313,6 +1373,12 @@ void processSerialCmd(String const& cmd) {
   }
   if (cmd == "stop") {
     g_modo_siguiente = Modo::DETENIDO;
+  }
+  if (cmd == "defrost") {
+    g_modo_siguiente = Modo::DEFROST;
+  }
+  if (cmd == "delaystart") {
+    g_modo_siguiente = Modo::ESPERA_INICIO_AUTOMATICO;
   }
 }
 
