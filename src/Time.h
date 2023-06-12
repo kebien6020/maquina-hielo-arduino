@@ -17,6 +17,9 @@ inline constexpr bool operator< (const Duration& lhs, const Duration& rhs){retur
 inline constexpr bool operator> (const Duration& lhs, const Duration& rhs){return  operator< (rhs,lhs);}
 inline constexpr bool operator<=(const Duration& lhs, const Duration& rhs){return !operator> (lhs,rhs);}
 inline constexpr bool operator>=(const Duration& lhs, const Duration& rhs){return !operator< (lhs,rhs);}
+inline constexpr Duration operator+(const Duration& lhs, const Duration& rhs) {
+  return Duration{lhs.unsafeGetValue() + rhs.unsafeGetValue()};
+}
 
 namespace literals {
 

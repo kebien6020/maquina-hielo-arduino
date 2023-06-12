@@ -6,6 +6,11 @@
 -DARDUINO=1
 -DARDUINO_AVR_MEGA2560
 -DARDUINO_ARCH_AVR
+-DE2END=0
+-D__COMPILING_AVR_LIBC__
+-D__AVR_ATmega2560__
+-D__AVR_DEVICE_NAME__=atmega2560
+-D__AVR_DEV_LIB_NAME__=m2560
 
 -I/home/pi/.platformio/packages/toolchain-atmelavr@3.70300.0/lib/gcc/avr/11.1.0/include-fixed
 -I/home/pi/.platformio/packages/toolchain-atmelavr@3.70300.0/lib/gcc/avr/11.1.0/include
@@ -18,4 +23,6 @@
 -I/home/pi/.platformio/packages/framework-arduino-avr/libraries/HID/src
 -I/home/pi/.platformio/packages/framework-arduino-avr/libraries/SPI/src
 -I.pio/libdeps/megaatmega2560/sml/include
--I/home/pi/projects/maquina-hielo-arduino/lib/ITEADLIB_Arduino_Nextion
+-Ilib/ITEADLIB_Arduino_Nextion
+-Ilib/MAX6675-library
+-Ilib/ModbusMaster/src

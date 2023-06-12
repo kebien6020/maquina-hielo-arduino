@@ -1,10 +1,11 @@
-constexpr auto version = "1.1 (09/Jun/2023)";
+constexpr auto version = "1.2 (11/Jun/2023)";
 
-#include <Nextion.h>
-#include <stdlib.h>
+#include <Arduino.h>
 #include <EEPROM.h>
+#include <HardwareSerial.h>
 #include <max6675.h>
 #include <ModbusMaster.h>
+#include <Nextion.h>
 
 #include "NexDualButton.h"
 #include "NexNumber.h"
@@ -36,6 +37,8 @@ constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 8ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 constexpr auto TIEMPO_MODO_CRUZERO = 35_min;
+constexpr auto TIEMPO_DELAY_CRUZERO_PAUSA_BOMBA = 15_min;
+constexpr auto TIEMPO_CRUZERO_PAUSA_BOMBA = 20_s;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 3ul * 60ul * 1000ul;
@@ -376,6 +379,7 @@ auto g_temp_muestras_control_frio = 0ul;
 auto g_temp_contactor = 0ul;
 auto g_inicio_delay_llenado_crusero = kev::Timestamp{};
 auto g_temp_inicio_cruzero = kev::Timestamp{};
+auto g_temp_inicio_pausa_bomba_cruzero = kev::Timestamp{};
 
 auto g_bomba_control_manual = false;
 auto g_bomba_manual = false;
@@ -698,7 +702,7 @@ void loop() {
   if (g_modo == Modo::CRUSERO) {
     fan(true);
     defrost(false);
-    bomba(true);
+    // bomba(true);
 
     const auto flotador_falling = flotador && !flotador_antes;
     const auto timer_running = bool(g_inicio_delay_llenado_crusero);
@@ -738,6 +742,14 @@ void loop() {
     if (tiempo_transcurrido > TIEMPO_MODO_CRUZERO) {
       g_modo_siguiente = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
+    }
+
+    auto const delay = TIEMPO_DELAY_CRUZERO_PAUSA_BOMBA;
+    auto const delay_and_pause = TIEMPO_DELAY_CRUZERO_PAUSA_BOMBA + TIEMPO_CRUZERO_PAUSA_BOMBA;
+    if (tiempo_transcurrido > delay && tiempo_transcurrido < delay_and_pause) {
+      bomba(false);
+    } else {
+      bomba(true);
     }
   }
 
@@ -1409,7 +1421,7 @@ void checkSerialUi(HardwareSerial& serial) {
   if (serial.available()) {
     auto cmd = serial.readStringUntil('\n');
     Serial.print("[serial] cmd=");
-    Serial.print(cmd);
+    Serial.println(cmd);
 
     processSerialCmd(cmd);
   }
