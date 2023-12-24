@@ -1,4 +1,4 @@
-constexpr auto version = "1.2 (11/Jun/2023)";
+constexpr auto version = "1.4 (23/Dic/2023)";
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -18,6 +18,9 @@ constexpr int PIN_FLOTADOR = 12;
 
 constexpr int PIN_FLT_TK_ALTO = 3;
 constexpr int PIN_FLT_TK_BAJO = 4;
+
+constexpr int PIN_TEMPERATURA_CRUSERO = 13;
+
 // Salidas
 constexpr int PIN_CONTACTOR_PRINCIPAL = 11;
 constexpr int PIN_DEFROST = 10;
@@ -33,7 +36,7 @@ constexpr int PIN_DIRECCION_RS485_2 = 24;
 // Tiempos
 constexpr auto TIEMPO_MODO_INICIO_CICLO = 60000ul;
 constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
-constexpr auto TIEMPO_FINAL_DE_CICLO = 4ul * 60ul * 1000ul;
+constexpr auto TIEMPO_FINAL_DE_CICLO = 7ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 8ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
 constexpr auto TIEMPO_MODO_CRUZERO = 35_min;
@@ -253,10 +256,11 @@ void setup() {
   //   EEPROM.write(CONFIG_DEFROST_DIRECCION, static_cast<uint8_t>(temp));
   // }
 
-
+  // Entradas
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
   pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
+  pinMode(PIN_TEMPERATURA_CRUSERO, INPUT_PULLUP);
 
   contactor(false);
   llenado(false);
@@ -574,6 +578,9 @@ auto flotador_tk_alto_antes = false;
 auto flotador_tk_bajo = false; // true -> nivel por encima de low
 auto flotador_tk_bajo_antes = false;
 
+auto temperatura_crusero = false; // true -> ya se puede cambiar a la siguiente etapa
+auto temperatura_crusero_antes = false;
+
 void eventoTkBajoNivel() {
   Serial.println("Evento bajo nivel");
   if (g_falla_activa) {
@@ -638,11 +645,15 @@ void loop() {
   flotador_tk_bajo_antes = flotador_tk_bajo;
   flotador_tk_bajo = digitalRead(PIN_FLT_TK_BAJO) == HIGH;
 
+  temperatura_crusero_antes = temperatura_crusero;
+  temperatura_crusero = digitalRead(PIN_TEMPERATURA_CRUSERO) == HIGH;
+
   ahora = millis();
 
   patronParpadeoLed();
   inicializarContadores();
-  leerTemperatura();
+  // leerTemperatura();
+  delay(2);
   cambiosDeModo();
   logicaTanque();
   checkSerialUi(Serial);
@@ -733,13 +744,13 @@ void loop() {
       }
     }
 
-    if (g_temperatura < g_config_temperatura_pre_defrost) {
-      g_modo_siguiente = Modo::FINAL_CICLO;
-      g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
-    }
-
     auto const tiempo_transcurrido = ahora - g_temp_inicio_cruzero;
-    if (tiempo_transcurrido > TIEMPO_MODO_CRUZERO) {
+    auto const pasar_siguiente_modo =
+      g_temperatura < g_config_temperatura_pre_defrost ||
+      tiempo_transcurrido > TIEMPO_MODO_CRUZERO ||
+      temperatura_crusero;
+
+    if (pasar_siguiente_modo) {
       g_modo_siguiente = Modo::FINAL_CICLO;
       g_temp_final_ciclo = ahora + TIEMPO_FINAL_DE_CICLO;
     }
@@ -1137,6 +1148,11 @@ void informacionSerial(int flotador) {
     }
     if (flotador_tk_alto) {
       Serial.print("FLA ");
+    } else {
+      Serial.print("    ");
+    }
+    if (temperatura_crusero) {
+      Serial.print("TMC ");
     } else {
       Serial.print("    ");
     }
