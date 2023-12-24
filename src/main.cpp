@@ -1,4 +1,4 @@
-constexpr auto version = "1.4 (23/Dic/2023)";
+constexpr auto version = "1.5 (24/Dic/2023)";
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -39,7 +39,7 @@ constexpr auto TIEMPO_BOMBA_INICIO = 5000ul;
 constexpr auto TIEMPO_FINAL_DE_CICLO = 7ul * 60ul * 1000ul;
 constexpr auto TIEMPO_DEFROST = 8ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ARRANQUE_CONTACTOR = 10000ul;
-constexpr auto TIEMPO_MODO_CRUZERO = 35_min;
+constexpr auto TIEMPO_MODO_CRUZERO = 30_min;
 constexpr auto TIEMPO_DELAY_CRUZERO_PAUSA_BOMBA = 15_min;
 constexpr auto TIEMPO_CRUZERO_PAUSA_BOMBA = 20_s;
 
