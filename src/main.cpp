@@ -1,4 +1,4 @@
-constexpr auto version = "1.7 (18/Feb/2024)";
+constexpr auto version = "1.8 (30/Dic/2025)";
 
 #include <Arduino.h>
 #include <EEPROM.h>
