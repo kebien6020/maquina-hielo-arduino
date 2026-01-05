@@ -1,23 +1,29 @@
-constexpr auto version = "1.8 (30/Dic/2025)";
+constexpr auto version = "1.9 (01/Ene/2026)";
 
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <HardwareSerial.h>
-#include <max6675.h>
 #include <ModbusMaster.h>
 #include <Nextion.h>
+#include <max6675.h>
 
+#include "Edge.h"
 #include "NexDualButton.h"
 #include "NexNumber.h"
+#include "Pin.h"
 #include "Time.h"
 
 using namespace kev::literals;
+using kev::EdgeDebounced;
+
+// clang-format off
 
 // Entradas
 constexpr int PIN_FLOTADOR = 12;
 
-constexpr int PIN_FLT_TK_ALTO = 3;
-constexpr int PIN_FLT_TK_BAJO = 4;
+// Activado LOW cuando se alcanza una temperatura negativa que finaliza el
+// modo crusero (el hielo ya esta formado)
+constexpr int PIN_SENSOR_TEMP_BAJA = 3;
 
 constexpr int PIN_TEMPERATURA_CRUSERO = 13;
 
@@ -44,12 +50,8 @@ constexpr auto TIEMPO_DELAY_CRUZERO_PAUSA_BOMBA = 15_min;
 constexpr auto TIEMPO_CRUZERO_PAUSA_BOMBA = 20_s;
 
 constexpr auto TIEMPO_ALARMA_LLENADO = 5ul * 60ul * 1000ul;
-constexpr auto TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO = 10ul * 60ul * 1000ul;
 constexpr auto TIEMPO_ALARMA_DOS_CICLOS = 20ul * 60ul * 1000ul;
-
-constexpr auto TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO = 10000ul;
-
-constexpr auto TIEMPO_DEBOUNCE_SENSORES_TK = kev::Duration{1000ul};
+constexpr auto TIEMPO_DEBOUNCE_SENSORES_TEMP = 2_s;
 
 // Configuraciones de serial
 constexpr auto MONITOR_SERIAL = true;
@@ -205,39 +207,30 @@ bool g_motor = false;
 void motor(bool state) { g_motor = state; }
 bool motor() { return digitalRead(PIN_MOTOR) == LOW; }
 
-bool g_solenoide_tk = false;
-void solenoide_tk(bool state) { g_solenoide_tk = state; }
-bool solenoide_tk() { return digitalRead(PIN_SOLENOIDE_TK_ALMACENAMIENTO) == HIGH; }
-
-bool g_bomba_tk = false;
-void bomba_tk(bool state) { g_bomba_tk = state; }
-bool bomba_tk() { return digitalRead(PIN_BOMBA_TK_ALMACENAMIENTO) == LOW; }
-
 // Globales configurables en UI
 auto g_config_temperatura_pre_defrost = 0;
 auto g_config_temperatura_defrost = 0;
 auto g_config_temperatura_inicio = 60;
 auto g_config_tiempo_llenado = 30;
 
-auto g_timestamp_solenoide_tk_on = 0ul;
-
 // Comunicacion Modbus
 ModbusMaster modbus;
 
 // Callbacks direccion 485 para libreria modbus
-void preTransmission()
-{
+void preTransmission() {
   // Configurar 485 para enviar
   digitalWrite(PIN_DIRECCION_RS485_1, HIGH);
   digitalWrite(PIN_DIRECCION_RS485_2, HIGH);
 }
 
-void postTransmission()
-{
+void postTransmission() {
   // Configurar 485 para recibir
   digitalWrite(PIN_DIRECCION_RS485_1, LOW);
   digitalWrite(PIN_DIRECCION_RS485_2, LOW);
 }
+
+InputPullup sensor_temp_baja_pin{PIN_SENSOR_TEMP_BAJA};
+EdgeDebounced sensor_temp_baja{sensor_temp_baja_pin, TIEMPO_DEBOUNCE_SENSORES_TEMP};
 
 void setup() {
   Serial.begin(115200);
@@ -258,8 +251,6 @@ void setup() {
 
   // Entradas
   pinMode(PIN_FLOTADOR, INPUT_PULLUP);
-  pinMode(PIN_FLT_TK_ALTO, INPUT_PULLUP);
-  pinMode(PIN_FLT_TK_BAJO, INPUT_PULLUP);
   pinMode(PIN_TEMPERATURA_CRUSERO, INPUT_PULLUP);
 
   contactor(false);
@@ -267,8 +258,6 @@ void setup() {
   fan(false);
   bomba(false);
   defrost(false);
-  solenoide_tk(false);
-  bomba_tk(false);
   actualizarSalidas();
   digitalWrite(LED_BUILTIN, LOW);
 
@@ -285,7 +274,6 @@ void setup() {
 
   // Pantalla
   {
-
     nexSerial.begin(115200);
     sendCommand("");
     sendCommand("bkcmd=1");
@@ -331,14 +319,6 @@ void setup() {
   g_config_temperatura_inicio = static_cast<int8_t>(EEPROM.read(CONFIG_INICIO_DIRECCION));
   g_config_tiempo_llenado = static_cast<int8_t>(EEPROM.read(CONFIG_TLLENADO_DIRECCION));
 
-  // Empezar a contar tiempo solenoide si al arrancar
-  // el tk almacenamiento esta vacio
-  const auto flotador_tk_bajo = digitalRead(PIN_FLT_TK_BAJO) == LOW;
-  if (flotador_tk_bajo == HIGH) {
-    g_timestamp_solenoide_tk_on = millis();
-    solenoide_tk(true);
-  }
-
   auto const was_running = readEepromRunning();
 
   if (was_running) {
@@ -357,17 +337,17 @@ enum class Modo {
   ESPERA_INICIO_AUTOMATICO,
 };
 
-const char* modoATexto(Modo m) {
+char const* modoATexto(Modo m) {
   switch (m) {
-    case Modo::DETENIDO:        return "DETENIDO    ";
-    case Modo::ARRANQUE:        return "ARRANQUE    ";
-    case Modo::INICIO_CICLO:    return "INICIO_CICLO";
-    case Modo::CRUSERO:         return "CRUSERO     ";
-    case Modo::FINAL_CICLO:     return "FINAL_CICLO ";
-    case Modo::DEFROST:         return "DEFROST     ";
-    case Modo::ESPERA_INICIO_AUTOMATICO: return "ESPERA_INICIO_AUTOMATICO";
+  case Modo::DETENIDO:                 return "DETENIDO    ";
+  case Modo::ARRANQUE:                 return "ARRANQUE    ";
+  case Modo::INICIO_CICLO:             return "INICIO_CICLO";
+  case Modo::CRUSERO:                  return "CRUSERO     ";
+  case Modo::FINAL_CICLO:              return "FINAL_CICLO ";
+  case Modo::DEFROST:                  return "DEFROST     ";
+  case Modo::ESPERA_INICIO_AUTOMATICO: return "ESPERA_INICIO_AUTOMATICO";
   }
-  return                               "DESCONOCIDO ";
+  return "DESCONOCIDO ";
 }
 
 auto g_modo_antes = Modo::DETENIDO;
@@ -499,7 +479,7 @@ void configPreDefrostCallback(void *) {
   uint32_t value;
   slPreDefrost.getValue(&value);
 
-  const auto temp = static_cast<int8_t>(value) - CONFIG_PRE_DEFROST_OFFSET;
+  auto const temp = static_cast<int8_t>(value) - CONFIG_PRE_DEFROST_OFFSET;
 
   Serial.print("Guardando en EEPROM en direccion ");
   Serial.print(CONFIG_PRE_DEFROST_DIRECCION);
@@ -514,7 +494,7 @@ void configDefrostCallback(void *) {
   uint32_t value;
   slDefrost.getValue(&value);
 
-  const auto temp = static_cast<int8_t>(value) - CONFIG_DEFROST_OFFSET;
+  auto const temp = static_cast<int8_t>(value) - CONFIG_DEFROST_OFFSET;
 
   Serial.print("Guardando en EEPROM en direccion ");
   Serial.print(CONFIG_DEFROST_DIRECCION);
@@ -529,7 +509,7 @@ void configInicioCallback(void *) {
   uint32_t value;
   slInicio.getValue(&value);
 
-  const auto temp = static_cast<int8_t>(value);
+  auto const temp = static_cast<int8_t>(value);
 
   Serial.print("Guardando en EEPROM en direccion ");
   Serial.print(CONFIG_INICIO_DIRECCION);
@@ -543,7 +523,7 @@ void configTLlenadoCallback(void *) {
   uint32_t value;
   slTLlenado.getValue(&value);
 
-  const auto tiempo = static_cast<int8_t>(value);
+  auto const tiempo = static_cast<int8_t>(value);
 
   Serial.print("Guardando en EEPROM en direccion ");
   Serial.print(CONFIG_TLLENADO_DIRECCION);
@@ -566,7 +546,6 @@ void leerTemperatura();
 void actualizarPantalla(bool flotador);
 void cambiosDeModo();
 void alarmas();
-void logicaTanque();
 void setEepromRunning(bool state);
 void informacionSerial(int flotador);
 
@@ -578,54 +557,12 @@ auto flotador_tk_alto_antes = false;
 auto flotador_tk_bajo = false; // true -> nivel por encima de low
 auto flotador_tk_bajo_antes = false;
 
-auto temperatura_crusero = false; // true -> ya se puede cambiar a la siguiente etapa
-auto temperatura_crusero_antes = false;
-
-void eventoTkBajoNivel() {
-  Serial.println("Evento bajo nivel");
-  if (g_falla_activa) {
-    Serial.println("Ignorando evento bajo nivel por falla activa");
-    return;
-  }
-
-  if (solenoide_tk()) {
-    Serial.println("Ignorando evento bajo nivel porque ya inicio el llenado");
-    return;
-  }
-
-  if (flotador_tk_alto) {
-    Serial.println("Ignorando evento bajo nivel porque ya esta lleno");
-    return;
-  }
-  solenoide_tk(true);
-  g_timestamp_solenoide_tk_on = ahora;
-
-  sendCommand("page 9");
-  recvRetCommandFinished();
-}
-
-void eventoTkAltoNivel() {
-  Serial.println("Evento alto nivel");
-  bomba_tk(false);
-  solenoide_tk(false);
-
-  irProcesoActualCallback(nullptr);
-}
-
 void manualLlenadoTkCallback(void *) {
-  Serial.println("Boton llenar tanque");
-  if (flotador_tk_alto) {
-    Serial.println("Ignorando llenado de tanque porque ya esta lleno");
-    return;
-  }
-
-  eventoTkBajoNivel();
+  Serial.println("Ignorando boton llenar tanque, funcionalidad removida");
 }
 
 void manualDetenerTkCallback(void *) {
-  Serial.println("Boton detener tanque");
-
-  eventoTkAltoNivel();
+  Serial.println("Ignorando boton detener tanque, funcionalidad removida");
 }
 
 auto g_timestamp_inicio_automatico = kev::Timestamp{};
@@ -640,14 +577,6 @@ void loop() {
   flotador_antes = flotador;
   flotador = digitalRead(PIN_FLOTADOR) == HIGH;
 
-  flotador_tk_alto_antes = flotador_tk_alto;
-  flotador_tk_alto = digitalRead(PIN_FLT_TK_ALTO) == HIGH;
-  flotador_tk_bajo_antes = flotador_tk_bajo;
-  flotador_tk_bajo = digitalRead(PIN_FLT_TK_BAJO) == HIGH;
-
-  temperatura_crusero_antes = temperatura_crusero;
-  temperatura_crusero = digitalRead(PIN_TEMPERATURA_CRUSERO) == HIGH;
-
   ahora = millis();
 
   patronParpadeoLed();
@@ -655,8 +584,8 @@ void loop() {
   // leerTemperatura();
   delay(2);
   cambiosDeModo();
-  logicaTanque();
   checkSerialUi(Serial);
+  sensor_temp_baja.update(ahora);
 
   if (g_modo == Modo::DETENIDO) {
     contactor(false);
@@ -715,8 +644,8 @@ void loop() {
     defrost(false);
     // bomba(true);
 
-    const auto flotador_falling = flotador && !flotador_antes;
-    const auto timer_running = bool(g_inicio_delay_llenado_crusero);
+    auto const flotador_falling = flotador && !flotador_antes;
+    auto const timer_running = bool(g_inicio_delay_llenado_crusero);
 
     if (flotador_falling && !llenado() && !timer_running) {
       g_inicio_delay_llenado_crusero = ahora; // registrar inicio de llenado
@@ -725,9 +654,9 @@ void loop() {
       }
     }
 
-    const auto delay_llenado = kev::Duration{g_config_tiempo_llenado * 1000};
-    const auto time_elapsed_delay_llenado = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
-    const auto delay_finished = time_elapsed_delay_llenado >= delay_llenado;
+    auto const delay_llenado = kev::Duration{g_config_tiempo_llenado * 1000};
+    auto const time_elapsed_delay_llenado = kev::Timestamp{ahora} - g_inicio_delay_llenado_crusero;
+    auto const delay_finished = time_elapsed_delay_llenado >= delay_llenado;
 
     if (flotador && delay_finished) {
       if (MENSAJES_ADICIONALES && g_inicio_delay_llenado_crusero) {
@@ -746,9 +675,12 @@ void loop() {
 
     auto const tiempo_transcurrido = ahora - g_temp_inicio_cruzero;
     auto const pasar_siguiente_modo =
-      g_temperatura < g_config_temperatura_pre_defrost ||
       tiempo_transcurrido > TIEMPO_MODO_CRUZERO ||
-      temperatura_crusero;
+      sensor_temp_baja.fallingEdge();
+
+    if (sensor_temp_baja.fallingEdge()) {
+      Serial.println("Sensor de temperatura baja activado, finalizando crusero");
+    }
 
     if (pasar_siguiente_modo) {
       g_modo_siguiente = Modo::FINAL_CICLO;
@@ -819,8 +751,6 @@ void actualizarSalidas() {
   digitalWrite(PIN_MOTOR, g_motor ? LOW : HIGH);
   digitalWrite(PIN_LLENADO, g_llenado ? HIGH : LOW);
   digitalWrite(PIN_DEFROST, g_defrost ? LOW : HIGH);
-  digitalWrite(PIN_SOLENOIDE_TK_ALMACENAMIENTO, g_solenoide_tk ? HIGH : LOW);
-  digitalWrite(PIN_BOMBA_TK_ALMACENAMIENTO, g_bomba_tk ? LOW : HIGH);
 }
 
 void cambiosDeModo() {
@@ -882,73 +812,6 @@ auto readEepromRunning() -> bool {
   return static_cast<bool>(EEPROM.read(EEPROM_IS_RUNNING));
 }
 
-void logicaTanque() {
-  // Debounce
-  static auto low_level_debounce_timer = kev::Timestamp{};
-  static auto low_level_state_prev = false;
-  static auto low_level_state = false;
-  auto const low_level_reading = flotador_tk_bajo;
-  if (low_level_reading != low_level_state_prev) {
-    low_level_debounce_timer = ahora;
-  }
-  auto const low_level_elapsed = kev::Timestamp{ahora} - low_level_debounce_timer;
-  auto const low_level_is_stable = low_level_elapsed > TIEMPO_DEBOUNCE_SENSORES_TK;
-  auto const low_level_changed = low_level_reading != low_level_state;
-  if (low_level_is_stable && low_level_changed) {
-    low_level_state = low_level_reading;
-  }
-  low_level_state_prev = low_level_reading;
-
-  auto const low_level_event =
-    low_level_is_stable &&
-    low_level_changed &&
-    low_level_state == false;
-
-  if (low_level_event) {
-    eventoTkBajoNivel();
-  }
-
-  const auto tiempo_solenoide_encendida = ahora - g_timestamp_solenoide_tk_on;
-  const auto finalizo_temporizador_solenoide =
-    solenoide_tk() && // la solenoide esta encendida, y...
-    tiempo_solenoide_encendida >= TIEMPO_SOLENOIDE_TK_ALMACENAMIENTO; // ya paso el tiempo de solenoide
-
-  if (finalizo_temporizador_solenoide) {
-    bomba_tk(true);
-  }
-
-  // Debounce
-  static auto high_level_debounce_timer = kev::Timestamp{};
-  static auto high_level_state_prev = false;
-  static auto high_level_state = false;
-  auto const high_level_reading = flotador_tk_alto;
-  if (high_level_reading != high_level_state_prev) {
-    high_level_debounce_timer = ahora;
-  }
-  auto const high_level_elapsed = kev::Timestamp{ahora} - high_level_debounce_timer;
-  auto const high_level_is_stable = high_level_elapsed > TIEMPO_DEBOUNCE_SENSORES_TK;
-  auto const high_level_changed = high_level_reading != high_level_state;
-  if (high_level_is_stable && high_level_changed) {
-    high_level_state = high_level_reading;
-  }
-  high_level_state_prev = high_level_reading;
-
-  auto const high_level_event =
-    high_level_is_stable &&
-    high_level_changed &&
-    high_level_state == true;
-
-  if (high_level_event) {
-    eventoTkAltoNivel();
-  }
-
-  if (high_level_state && bomba_tk()) {
-    Serial.println("Forzando apagado de bomba por nivel alto");
-    solenoide_tk(false);
-    bomba_tk(false);
-  }
-}
-
 void patronParpadeoLed() {
   if (g_modo == Modo::INICIO_CICLO) {
     if ((ahora % 1000) < 500) {
@@ -996,28 +859,32 @@ void inicializarContadores() {
 
 auto g_timestamp_ultima_lectura_temperatura = 0ul;
 
-void leerTemperatura() {
-  const auto tiempo_transcurrido = ahora - g_timestamp_ultima_lectura_temperatura;
+// Removed because we currently don't have a MODBUS-enabled temperature sensor
+//
+// void leerTemperatura() {
+//  auto const tiempo_transcurrido =
+//    ahora - g_timestamp_ultima_lectura_temperatura;
+//
+//  if (tiempo_transcurrido >= 1000) {
+//    g_timestamp_ultima_lectura_temperatura = ahora;
+//
+//    auto const result = modbus.readInputRegisters(0x03E8, 1);
+//
+//    if (result == modbus.ku8MBSuccess) {
+//      auto const value = modbus.getResponseBuffer(0);
+//
+//      auto const degreesTimesTen = static_cast<int16_t>(value);
+//      g_temperatura = degreesTimesTen / 10.0;
+//    } else {
+//      Serial.print(
+//        "Lectura no exitosa de la temperatura, codigo libreria "
+//        "modbus: ");
+//      Serial.println(result, 16);
+//    }
+//  }
+// }
 
-  if (tiempo_transcurrido >= 1000) {
-    g_timestamp_ultima_lectura_temperatura = ahora;
-
-    const auto result = modbus.readInputRegisters(0x03E8, 1);
-
-    if (result == modbus.ku8MBSuccess) {
-      const auto value = modbus.getResponseBuffer(0);
-
-      const auto degreesTimesTen = static_cast<int16_t>(value);
-      g_temperatura = degreesTimesTen / 10.0;
-    } else {
-      Serial.print("Lectura no exitosa de la temperatura, codigo libreria modbus: ");
-      Serial.println(result, 16);
-    }
-
-  }
-}
-
-void pantallaFalla(const char* mensaje) {
+void pantallaFalla(char const* mensaje) {
   g_falla_activa = true;
   sendCommand("page 8"); // fallas
   recvRetCommandFinished();
@@ -1029,17 +896,13 @@ auto g_timestamp_inicio_llenado = 0ul;
 auto g_timestamp_inicio_llenado_tk = 0ul;
 auto g_timestamp_inicio_ciclo = 0ul;
 
-auto g_tiempo_ciclo_prev = 0ul; // anterior anterior
-auto g_tiempo_ciclo = 0ul;      // anterior
+auto g_tiempo_ciclo_prev = 0ul;  // anterior anterior
+auto g_tiempo_ciclo = 0ul;       // anterior
 
 void alarmas() {
   // Timestamps
   if (g_llenado && g_llenado != llenado()) {
     g_timestamp_inicio_llenado = ahora;
-  }
-
-  if (g_bomba_tk && g_bomba_tk != bomba_tk()) {
-    g_timestamp_inicio_llenado_tk = ahora;
   }
 
   // Alarmas
@@ -1055,29 +918,10 @@ void alarmas() {
     // pantallaFalla(buffer);
   }
 
-  // Alarma sensor bajo dañado
-  if (!flotador_tk_bajo && flotador_tk_alto) {
-    // pantallaFalla("Falla en sensor de nivel bajo");
-    Serial.print("Falla en sensor de nivel bajo");
-  }
-
-  // Alarma tiempo llenado tk almacenamiento
-  auto tiempo_llenando_tk = ahora - g_timestamp_inicio_llenado_tk;
-  if (bomba_tk() && tiempo_llenando_tk > TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO) {
-    Serial.println("Error tiempo llenado tk");
-    g_modo_siguiente = Modo::DETENIDO;
-    solenoide_tk(false);
-    bomba_tk(false);
-    g_timestamp_inicio_llenado_tk = ahora; // resetear contador de alarma
-
-    sprintf(buffer, "Tiempo de llenado tk alamcenamiento super\xF3 %ds", (int)(TIEMPO_ALARMA_LLENADO_TK_ALAMCENAMIENTO / 1000ul));
-    pantallaFalla(buffer);
-  }
-
   // Alarma tiempo ciclo muy corto
   if (g_modo == Modo::INICIO_CICLO && g_modo != g_modo_antes) {
     if (g_timestamp_inicio_ciclo != 0ul) {
-      const auto duracion_ciclo = ahora - g_timestamp_inicio_ciclo;
+      auto const duracion_ciclo = ahora - g_timestamp_inicio_ciclo;
       g_tiempo_ciclo_prev = g_tiempo_ciclo;
       g_tiempo_ciclo = duracion_ciclo;
 
@@ -1103,7 +947,6 @@ void alarmas() {
       }
     }
   }
-
 }
 
 void informacionSerial(int flotador) {
@@ -1151,11 +994,6 @@ void informacionSerial(int flotador) {
     } else {
       Serial.print("    ");
     }
-    if (temperatura_crusero) {
-      Serial.print("TMC ");
-    } else {
-      Serial.print("    ");
-    }
 
     Serial.print(" - Salidas: ");
     if (digitalRead(PIN_CONTACTOR_PRINCIPAL) == LOW) {
@@ -1183,27 +1021,14 @@ void informacionSerial(int flotador) {
     } else {
       Serial.print("    ");
     }
-    if (solenoide_tk()) {
-      Serial.print("STK ");
-    } else {
-      Serial.print("    ");
-    }
-    if (bomba_tk()) {
-      Serial.print("BTK ");
-    } else {
-      Serial.print("    ");
-    }
-
-    Serial.print(" - TEMPERATURA: ");
-    Serial.print(g_temperatura);
 
     if (g_modo == Modo::INICIO_CICLO) {
       Serial.print(" - T_INICIO: ");
-      Serial.print((g_temp_inicio_ciclo - ahora)/ 1000ul);
+      Serial.print((g_temp_inicio_ciclo - ahora) / 1000ul);
       Serial.print(", T_BOMBA: ");
-      Serial.print((g_temp_bomba_inicio - ahora)/ 1000ul);
+      Serial.print((g_temp_bomba_inicio - ahora) / 1000ul);
       Serial.print(", T_DEBOUNCE: ");
-      Serial.print((g_temp_debounce_inicio - ahora)/ 1000ul);
+      Serial.print((g_temp_debounce_inicio - ahora) / 1000ul);
     }
 
     if (g_modo == Modo::CRUSERO && g_inicio_delay_llenado_crusero) {
@@ -1222,12 +1047,12 @@ void informacionSerial(int flotador) {
 
     if (g_modo == Modo::FINAL_CICLO) {
       Serial.print(" - T_FINAL: ");
-      Serial.print((g_temp_final_ciclo - ahora)/ 1000ul);
+      Serial.print((g_temp_final_ciclo - ahora) / 1000ul);
     }
 
     if (g_modo == Modo::DEFROST) {
       Serial.print(" - T_DEFROST: ");
-      Serial.print((g_temp_defrost - ahora)/ 1000ul);
+      Serial.print((g_temp_defrost - ahora) / 1000ul);
     }
 
     if (g_modo == Modo::ESPERA_INICIO_AUTOMATICO) {
@@ -1253,11 +1078,9 @@ uint32_t pagina_anterior = 0;
 uint32_t pagina = -1;
 
 void actualizarPantalla(bool flotador) {
-
   char buffer[32];
 
   if (g_temp_serial <= ahora) {
-
     pagina_anterior = pagina;
     sendCommand("get dp");
     recvRetNumber(&pagina);
@@ -1281,8 +1104,7 @@ void actualizarPantalla(bool flotador) {
       slTLlenado.setValue(g_config_tiempo_llenado);
       nTLlenado.setValue(g_config_tiempo_llenado);
 
-      dtostrf(g_temperatura, 6, 1, buffer);
-      tTemperaturaConfig.setText(buffer);
+      tTemperaturaConfig.setText("N/A");
     }
 
     itoa(g_contador_ciclos, buffer, 10);
@@ -1308,20 +1130,11 @@ void actualizarPantalla(bool flotador) {
       bAguaC.setText(g_bomba_control_manual ? "Manual" : "Auto");
       bLlenadoC.setVal(g_llenado_control_manual ? 1 : 0);
       bLlenadoC.setText(g_llenado_control_manual ? "Manual" : "Auto");
-
     }
 
-    if (pagina == 9) { // control tk
-      if (bomba_tk()) {
-        tCTkStatus.setText("Llenando...");
-        tCTkStatus.Set_background_color_bco(2024); // Green
-      } else if (solenoide_tk()) {
-        tCTkStatus.setText("Solenoide");
-        tCTkStatus.Set_background_color_bco(2024); // Green
-      } else {
-        tCTkStatus.setText("Detenido");
-        tCTkStatus.Set_background_color_bco(65535); // White
-      }
+    if (pagina == 9) {  // control tk
+      tCTkStatus.setText("Funcionalidad de Control de Tanque Removida");
+      tCTkStatus.Set_background_color_bco(2024);  // Green
     }
 
     if (g_modo == Modo::ARRANQUE) {
@@ -1345,13 +1158,12 @@ void actualizarPantalla(bool flotador) {
     if (g_modo == Modo::CRUSERO) {
       tBombaCrusero.setText(bomba() ? "ON" : "OFF");
       tFanCrusero.setText(fan() ? "ON" : "OFF");
-      tLlenadoCrusero.setText(llenado() ? "ON": "OFF");
-      tFltCrusero.setText(flotador ? "VACIO": "LLENO");
-      dtostrf(g_temperatura, 6, 1, buffer);
-      tTemperaturaCrusero.setText(buffer);
+      tLlenadoCrusero.setText(llenado() ? "ON" : "OFF");
+      tFltCrusero.setText(flotador ? "VACIO" : "LLENO");
+      tTemperaturaCrusero.setText("N/A");
 
-      const auto end_delay_llenado = g_inicio_delay_llenado_crusero + kev::Duration{g_config_tiempo_llenado * 1000};
-      const auto remaining_delay_llenado = end_delay_llenado - kev::Timestamp{ahora};
+      auto const end_delay_llenado = g_inicio_delay_llenado_crusero + kev::Duration{g_config_tiempo_llenado * 1000};
+      auto const remaining_delay_llenado = end_delay_llenado - kev::Timestamp{ahora};
 
       if (remaining_delay_llenado >= 0) {
         itoa(remaining_delay_llenado.unsafeGetValue() / 1000ul, buffer, 10);
@@ -1363,11 +1175,10 @@ void actualizarPantalla(bool flotador) {
 
     if (g_modo == Modo::FINAL_CICLO) {
       tMotorPDefrost.setText(motor() ? "ON" : "OFF");
-      dtostrf(g_temperatura, 6, 1, buffer);
-      tTemperaturaPDefrost.setText(buffer);
+      tTemperaturaPDefrost.setText("N/A");
       tDefrostPDefrost.setText(defrost() ? "ON" : "OFF");
       tFanPDefrost.setText(fan() ? "ON" : "OFF");
-      tLlenadoPDefrost.setText(llenado() ? "ON": "OFF");
+      tLlenadoPDefrost.setText(llenado() ? "ON" : "OFF");
       if (g_temp_final_ciclo >= ahora) {
         itoa((g_temp_final_ciclo - ahora) / 1000ul, buffer, 10);
         tTPreDefrost.setText(buffer);
@@ -1378,11 +1189,10 @@ void actualizarPantalla(bool flotador) {
 
     if (g_modo == Modo::DEFROST) {
       tMotorDefrost.setText(motor() ? "ON" : "OFF");
-      dtostrf(g_temperatura, 6, 1, buffer);
-      tTemperaturaDefrost.setText(buffer);
+      tTemperaturaDefrost.setText("N/A");
       tDefrostDefrost.setText(defrost() ? "ON" : "OFF");
       tFanDefrost.setText(fan() ? "ON" : "OFF");
-      tLlenadoDefrost.setText(llenado() ? "ON": "OFF");
+      tLlenadoDefrost.setText(llenado() ? "ON" : "OFF");
       if (g_temp_defrost >= ahora) {
         itoa((g_temp_defrost - ahora) / 1000ul, buffer, 10);
         tTDefrost.setText(buffer);
