@@ -1,4 +1,4 @@
-constexpr auto version = "1.9 (01/Ene/2026)";
+constexpr auto version = "1.10 (16/Nov/2026)";
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -24,6 +24,9 @@ constexpr int PIN_FLOTADOR = 12;
 // Activado LOW cuando se alcanza una temperatura negativa que finaliza el
 // modo crusero (el hielo ya esta formado)
 constexpr int PIN_SENSOR_TEMP_BAJA = 3;
+// Activado LOW cuando se alcanza una temperatura sufuciciente para considerar
+// el deforst como finalizado
+constexpr int PIN_SENSOR_TEMP_ALTA = 4;
 
 constexpr int PIN_TEMPERATURA_CRUSERO = 13;
 
@@ -231,6 +234,9 @@ void postTransmission() {
 
 InputPullup sensor_temp_baja_pin{PIN_SENSOR_TEMP_BAJA};
 EdgeDebounced sensor_temp_baja{sensor_temp_baja_pin, TIEMPO_DEBOUNCE_SENSORES_TEMP};
+
+InputPullup sensor_temp_alta_pin{PIN_SENSOR_TEMP_ALTA};
+EdgeDebounced sensor_temp_alta{sensor_temp_alta_pin, TIEMPO_DEBOUNCE_SENSORES_TEMP};
 
 void setup() {
   Serial.begin(115200);
@@ -586,6 +592,7 @@ void loop() {
   cambiosDeModo();
   checkSerialUi(Serial);
   sensor_temp_baja.update(ahora);
+  sensor_temp_alta.update(ahora);
 
   if (g_modo == Modo::DETENIDO) {
     contactor(false);
@@ -593,12 +600,22 @@ void loop() {
     bomba(false);
     fan(false);
     llenado(false);
+
+    if (sensor_temp_alta.risingEdge()) {
+      Serial.println("Pasando de DETENIDO a ARRANQUE por el sensor de temperatura alta");
+      inicio();
+    }
   }
 
   if (g_modo == Modo::ESPERA_INICIO_AUTOMATICO) {
     auto const elapsed = ahora - g_timestamp_inicio_automatico;
     if (elapsed > TIEMPO_ESPERA_INICIO_AUTOMATICO) {
       g_modo_siguiente = Modo::ARRANQUE;
+    }
+
+    if (sensor_temp_alta.risingEdge()) {
+      Serial.println("Pasando de ESPERA_INICIO_AUTOMATICO a INICIO_CICLO por el sensor de temperatura alta");
+      inicio();
     }
   }
 
@@ -722,6 +739,11 @@ void loop() {
     }
 
     if (g_temperatura > g_config_temperatura_inicio) {
+      g_modo_siguiente = Modo::INICIO_CICLO;
+    }
+
+    if (sensor_temp_alta.risingEdge()) {
+      Serial.println("Pasando de DEFROST a INICIO_CICLO por el sensor de temperatura alta");
       g_modo_siguiente = Modo::INICIO_CICLO;
     }
   }
